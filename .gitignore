@@ -12,7 +12,7 @@ readings/
 writeup/
 fits/
 
-jobs/licht_2019_evaluating_crowdsourced_elite_critique_codings_files/
+jobs/licht_2019_evaluating_crowdsourced_elite_critique_codings_files/*
 jobs/anl_crowdflower_2017_anti-elite_annotation_data/
 jobs/plots/ 
 
