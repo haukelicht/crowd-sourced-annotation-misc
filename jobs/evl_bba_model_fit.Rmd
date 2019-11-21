@@ -1,0 +1,974 @@
+---
+title: "Evaluating fit of BBA model"
+author: "Hauke Licht"
+date: "`r lubridate::ymd(Sys.Date())`"
+output: html_document
+bibliography: /Users/licht/switchdrive/Documents/work/phd/phd_research.bib
+---
+
+```{r knitr, echo = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  , warning = FALSE
+  , message = FALSE
+  , fig.align = 'center'
+  , fig.height = 4
+  , fig.width = 8
+  , out.extra='style="padding:30px; display: inline-block;"'
+)
+
+options(digits = 3)
+```
+
+```{r setup}
+# set seed
+this_seed <- 1234
+set.seed(this_seed)
+
+# set the file path
+file_path <- file.path("~", "switchdrive", "Documents", "work", "phd", "methods", "crowd-sourced_annotation")
+
+# load required namespaces
+
+# data manipulation
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(stringr)
+# stats
+library(extraDistr)  
+library(rjags)
+# plotting
+library(ggplot2)
+library(ggridges)
+library(gridExtra)
+library(grid)
+
+# define helpers
+
+# from codings data frame, get list that can be passed to 'code::model's data argument when fitting the BBA model
+get_codings_data <- function(codings.df) {
+  
+  out <- list() 
+  
+  out$N <- length(unique(codings.df$item))
+  out$M <- length(unique(codings.df$coder))
+  out$J <- length(codings.df$judgment)
+  out$y <- codings.df %>% 
+    arrange(item, coder) %>% 
+    select(item, coder, judgment)
+  
+  return(out)
+}
+
+
+# Function getting parameter estimates from 'coda::mcmc.list' object and returns them in a tidy dataframe
+get_mcmc_estimates <- function(fit.obj, params, use.regex = TRUE){
+  
+  if (!inherits(fit.obj, "mcmc.list"))
+    stop("`fit.obj` must be a 'mcmc.list' object")
+  
+  # test number of chains (equals No. top-level list elements)
+  if ( (n_chains <- length(fit.obj)) == 0)
+    stop("`fit.obj` has zero length")
+  
+  # get parameters contained in fit object
+  these_params <- colnames(fit.obj[[1]])
+  
+  # get index positions of parameters to be obtained
+  if (use.regex) {
+    idxs <- which(grepl(params, these_params))
+  } else {
+    if (any((miss_params <- !params %in% these_params)))
+      warning(
+        "The following `params` are not contained in `fit.obj`: ", 
+        paste0("'", params[miss_params], "'", collapse = ", ")
+      )
+    idxs <- which(these_params %in% params)
+  }
+  
+  # obtain parameter estimates in tidy data frame
+  suppressWarnings(
+    purrr::map_df(these_params[idxs], function(param, obj = fit.obj){
+      purrr::map_df(1:n_chains, function(c, o = obj, p = param) {
+        tibble::tibble(
+          parameter = param
+          , chain = c
+          , est = o[[c]][, p]
+        ) %>% 
+          dplyr::mutate(iter = dplyr::row_number())
+      })
+    })
+  )
+}
+```
+
+
+## Goal
+
+The goal of this note is to implement and validate the Beta-Binomial by Annotator (BBA) model proposed by @carpenter_multilevel_2008 in JAGS using R.
+This model is designed to obtain estimates of items class membership from a set of multiple (human) judgements  per along a binary coding scheme.
+Human judgments are also referred to as annotations or codings. 
+
+I first introduce notation and present the model as discribed in Carpenter's original article and illustrate prior choices.
+I then simulate binary codings data following the instructions specified in  @carpenter_multilevel_2008 [p. 16 and 19].
+In the final section, I then evaluate whether the model allows to recover the simualted parameter values. 
+I find that it does so quiet well for the prevalence of positive instances, and the hyperparameters governing coder-specific parameters.
+Surprisingly, however, and in contradiction to what Carpenter reports for simulated data generated, the model performs poorly in recovering the true simulated coder-specific abiltiy parameters.
+Morover, the model quiet confidently misclassifies a sizeable amount of items.
+This results in an accouracy of only ~70%.
+
+
+
+## Implementation
+
+### Notation
+
+The setup can be described as a four-tuple $\langle\mathcal{I}, \mathcal{J}, \mathcal{K}, \mathcal{Y}\rangle$: 
+
+- $\mathcal{I}$ is the set of \emph{items} $i \in 1,\ \ldots ,\ n$ distributed for coding/annotation,
+- $\mathcal{J}$ is the set of \emph{coders} $j \in 1,\ \ldots ,\ m$,
+- $\mathcal{K}$ is the set of \emph{classes} $k \in \{0, 1\}$ defined by the categorical coding scheme, and
+- $\mathcal{Y}$ is the set of \emph{judgments} (or codings) $y_{i,j} \in \{0, 1\}$ recorded for item $i$ by coder $j$.
+
+In total, we have $d = n \times m$ judgments.
+It is provided that $\mathcal{Y}$ contains at least one judgment per item, that is, $|\mathcal{Y}_i| \geq 1\ \forall\ i \in \mathcal{I}$, and that $|\mathcal{Y}_i| \geq 2\ \forall\ i \in \mathcal{I}' \subset \mathcal{I}$ and $\mathcal{I}' \neq \emptyset$. 
+Moreover, no coder judged an item more than once.
+When each item is judged by each coder we refer to the codings data as a *complete panel*.
+When each item not is judged by each coder we refer to the codings data as a *panel with missingness*.
+
+### The Model
+
+Importantly, while coders' judgments of items are observed, items' true classes $c_i \in \mathcal{K}$ are unknown *a priori* for all $i = 1,\ \ldots,\ n$.
+In this setup, a classification of items into classes obtained from a set of judgments $\rho(\mathcal{Y}) \Rightarrow \mathcal{C}$ is called a *ground truth labeling*.
+
+Given codings data, such a ground truth labeling can be obtained by estimating the following Bayesian hierarchical model [@carpenter_multilevel_2008, Figure 3]:
+
+$$
+\begin{align*}
+c_i &\sim\ \mbox{Bernoulli}(\pi)\\
+\theta_{0j} &\sim\ \mbox{Beta}(\alpha_0 , \beta_0)\\
+\theta_{1j} &\sim\ \mbox{Beta}(\alpha_1 , \beta_1)\\
+y_{ij} &\sim\ \mbox{Bernoulli}(c_i\theta_{1j} + (1 - c_i)(1  - \theta_{0j}))\\
+{}&{}\\
+\pi &\sim\ \mbox{Beta}(1,1)\\
+\alpha_0/(\alpha_0 + \beta_0) &\sim\ \mbox{Beta}(1,1)\\  
+\alpha_0+\beta_0 &\sim\ \mbox{Pareto}(1.5)\\
+\alpha_1/(\alpha_1 + \beta_1) &\sim\ \mbox{Beta}(1,1)\\ 
+\alpha_1+\beta_1  &\sim\ \mbox{Pareto}(1.5)
+\end{align*}
+$$
+where 
+
+- $c_i$ is the class of statement $i$,
+- $\theta_{0,j}$ is coder $j$'s specificity (true-negative detection ability), and $\theta_{1,j}$ is her sensitivity (true-positive detection ability),
+- $y_ij$ is coder $j$'s observed judgement of item $i$,
+- $\pi$ is the prevalence of the positive class, and
+- $\alpha_0/(\alpha_0 + \beta_0)$ ($\alpha_1/(\alpha_1 + \beta_1)$) is the mean of the Beta hyper-distribution governing coders' specificities (sensitivities) and $\alpha_0 + \beta_0$ ($\alpha_1 + \beta_1$) is the scale of this distribution.
+
+@carpenter_multilevel_2008 refers to this model as the Beta-Binomial by Annotator (BBA) model.[^1]
+As already touched upon above, the only data we observe is coders' judgments of items into classes.
+A coder's individual judgment is modeled as a draw from a Bernoulli distribution.
+Specifically, $p$, the parameter governing the Bernoulli distribution, is set to the coder's sensitivitiy if the item's true class, $c_i$, equals 1, and to the coder's specificity otherwise.
+The item's true class, in turn, follows a Bernoulli distribution governed by $pi$, which in turn is given a flat beta prior.
+Similarly, a coder's specifiticty $\theta_{0j}$ (sensitivity $\theta_{1j}$) is a draw from a Beta distribution that itself is governed by $\alpha_0$ ($\alpha_1$) and $\beta_0$ ($\beta_1$), which, in turn, are given flat priors.
+Specifically, means of the Beta-distributions of coders' specificity and sensitivity are given a flar Beta prior, and the inverse square scales $1/(\alpha_.+\beta_.)^2$ of the Beta-distributions of coders' specificity and sensitivity are given a uniform prior, which are expressed as Pareto priors on the scales.
+
+[^1]: This name is due to its property that, given a conjugate beta prior, the posterior densities of items' class membership follow a beta-binomial distribution.
+
+These priors look as follows:
+
+```{r plot proir densities, echo = FALSE}
+grid.arrange(
+  ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+    stat_function(fun=function(x) dbeta(x, 1, 1)) +
+    theme_bw() +
+    labs(x = expression(pi))
+  , ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+    stat_function(fun=function(x) dbeta(x, 1, 1)) +
+    theme_bw() +
+    labs(x = expression(alpha[.]/(alpha[.] + beta[.])))
+  , ggplot(data.frame(x = 1:20), aes(x)) + 
+    stat_function(fun=function(x) extraDistr::dpareto(x, 1.5, 1)) +
+    theme_bw() +
+    labs(x = expression(alpha[.] + beta[.]))
+  , ncol = 3
+  , top = grid::textGrob("Densities of hyperpriors of the BBA model\n")
+)
+```
+
+The latter two priors can also be inspected with regard to what priors they induce on $\alpha_.$ and $\beta_.$, respectively.
+To do so, I sample 1000 pairs from correspondingly parameterized distributions and compute $\alpha^{sim}$ and $\beta^{sim}$ values from each pair.
+
+```{r inspect induced hyperprior distr, echo = FALSE}
+beta_means <- rbeta(1000, 1, 1)
+beta_scales <- extraDistr::rpareto(1000, 1.5, 1)
+
+# we take advantage of vectorization in R
+alphas <- beta_means*beta_scales
+betas <- beta_scales-alphas
+
+tibble(
+  value = c(alphas, betas)
+  , parameter = rep(c("log(alpha^sim)", "log(beta^sim)"), each = 1000)
+) %>% 
+  ggplot(aes(x = value, group = parameter)) +
+    # geom_histogram(alpha = .5, color = NA, fill = "grey", alpha = .75) +
+    geom_density(color = NA, fill = "grey", position = "identity") +
+    facet_grid(cols = vars(parameter), labeller = label_parsed) +
+    scale_x_continuous(trans = "log") +
+    theme_bw() + 
+    labs(
+      title = expression(paste("Distribution of randomly sampled, logarithmized values of ", alpha, " and ", beta))
+      , subtitle = expression(
+        paste( 
+          "Computed from 1000 sampled values of mean ",
+          alpha/(alpha+beta)%~%f[Beta](1,1),
+          " and scale ",
+          (alpha+beta)%~%f[Pareto](1.5,1)
+        )
+      )
+      , x = ""
+      , y = "Density"
+    )
+```
+
+Next, I use the sampled $\alpha^{sim}$ and $\beta^{sim}$ values to obtain draws from a correspondingly parameterized  Beta distributions.
+This yields the following empirical distribution:
+  
+```{r plot beta hyperprior distr, echo = FALSE}
+tibble(pi = rbeta(1000, alphas, betas)) %>% 
+  ggplot(aes(x = pi)) +
+    geom_histogram(alpha = .75) +
+    theme_bw() + 
+    labs(
+      title = expression(paste("Distribution of 1000 sampled values of ", theta^sim%~%f[Beta](alpha, beta)))
+      , subtitle = expression(
+        paste( 
+          "With mean ",
+          alpha/(alpha+beta)%~%f[Beta](1,1),
+          " and scale ",
+          (alpha+beta)%~%f[Pareto](1.5,1)
+        )
+      )
+      , x = expression(theta^sim)
+      , y = NULL
+    )
+```
+
+What these hyperprior choices induce is thus a push of coder ability estimates to the extremes of perfect specificity (sensitivity) and perfectly negatively-correlated specificity (sensitivity), respectively.
+
+## Validation
+
+### Data generation
+
+```{r sim codings}
+# simulation parameters
+n_items <- 1000
+n_coders <- 20
+missingness_rate <- .5
+
+# data generation parameters
+pi <- .2
+alpha0 <- 40
+beta0 <- 8
+alpha1 <- 20
+beta1 <- 8
+
+# sample items' classes
+sim_item_classes <- as.integer(rbernoulli(n = n_items, p = pi))
+
+# sample coders' ability parameters
+sim_theta0 <- rbeta(n = n_coders, shape1 = alpha0, shape2 = beta0)
+sim_theta1 <- rbeta(n = n_coders, shape1 = alpha1, shape2 = beta1)
+
+# for each item i
+sim_codings <- map_df(1:n_items, function(i){
+  
+  # sample ~10 coders who judge the item's class
+  idxs <- sample(1:n_coders, ceiling(n_coders*(1-missingness_rate)))
+  
+  # for each coder in the sample, 
+  y_i <- map_int(idxs, function(idx) {
+    # generate coder j's judgment given item i' s 'true' class:
+    #  - if the 'true' class is positive, j classifies it as positive with probability theta_{j1}
+    #  - if the 'true' class is negative, j classifies it as negative with probability theta_{j0}
+    rbernoulli(1, p = sim_item_classes[i]*sim_theta1[idx] + (1 - sim_item_classes[i])*(1 - sim_theta0[idx]) )
+  })
+  
+  # gather data and return 
+  tibble(
+    # the item index (ID)
+    item = i
+    # coders indices (IDs)
+    , coder = idxs
+    # simulated judgments 
+    , judgment = y_i
+    # item i's 'true' class
+    , true_class = sim_item_classes[i] 
+  )
+})
+
+sim_codings <- list(
+  codings = sim_codings
+  , abilities = list(
+    theta0 = sim_theta0
+    , theta1 = sim_theta1
+  )
+)
+```
+
+To examine whether the model is able to recover correct parameter values, I follow the instructions Carpenter gives to simulate a panel with missingness of codings generated by `r n_coders` coders for `r n_items` items with a missingness rate of `r missingness_rate`.
+Items true classes are drawn from a Bernoulli distribution with $pi = .2$.
+In expectation, we thus have four times as many negative as positive items.
+Annotators' specificity and sensitivity parameters $\theta_{.0}, \theta_{.1}$ are drawn from $f_{\text{Beta}}(\alpha_0, \beta_0)$ with $(\alpha_0, \beta_0) = (40, 8)$ and
+$f_{\text{Beta}}(\alpha_1, \beta_1)$ with $(\alpha_1, \beta_1) = (20, 8)$, respectively.
+The probability density functions (PDFs) of these distributions look as follows: 
+
+```{r plot annotator parameter PDFs, echo = FALSE}
+# sampling distribution annotator-specific parameters
+pdf_theta0 <- function(x) dbeta(x, alpha0, beta0)
+pdf_theta1 <- function(x) dbeta(x, alpha1, beta1)
+
+ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+  stat_function(fun=pdf_theta0, aes(color = "theta[0]")) +
+  stat_function(fun=pdf_theta1, aes(color = "theta[1]")) +
+  labs(
+    title = expression(paste("Prior densities ", theta[.*0], " and ", theta[.*1]))
+    , y = "Density"
+    , x = expression(theta[..])
+    , color = ""
+  ) + 
+  theme_bw() +
+  theme(legend.position = "top") +
+  scale_colour_discrete(
+    labels = c(
+      expression(theta[.*0]%~%f[Beta](40, 8))
+      , expression(theta[.*1]%~%f[Beta](20, 8))
+    )
+  )
+```
+
+Coders' simulated (true) abilities parameter values scatter nicely, so that it is ensured that the simulated judgments are generated by a population of coders with mixed ability profiles (mind axes scales):
+
+```{r plot sim thetas, echo = FALSE}
+tibble(
+  theta0 = sim_codings$abilities$theta0
+  , theta1 = sim_codings$abilities$theta1
+) %>% 
+  ggplot(aes(x = theta0, y = theta1)) +
+    geom_vline(aes(xintercept = mean(theta0)), color = "grey") +
+    geom_hline(aes(yintercept = mean(theta1)), color = "grey") + 
+    geom_point() +
+    scale_x_continuous(limits = range(sim_codings$abilities$theta0) + c(-.1, .1)) +
+    scale_y_continuous(limits = range(sim_codings$abilities$theta1) + c(-.1, .1)) +
+    labs(
+      title = "Distribution of coders' simulated ability parameters"
+      , subtitle = expression(paste("Sensitivity (",theta[.*1],") vs. specificity (",theta[.*0],")"))
+      , x = expression(theta[.*0])
+      , y = expression(theta[.*1])
+    ) +
+    theme_bw() +
+    theme(
+      axis.title.y = element_text(angle = 0, vjust = .5) 
+    )
+```
+
+This yields `r ceiling(n_coders*missingness_rate)` per item obtained from a random subsample of unique coders.
+
+Knowing items true classes allows to compute coders empirical performance.
+As the following plot illustrates, coders vary also in their observed performance:
+
+```{r compute performance}
+# inspect coders' performance
+obs_performance <- sim_codings$codings %>% 
+  group_by(coder) %>% 
+  summarise(
+    n_judgments = n_distinct(item)
+    , accuracy = sum(judgment == true_class)/n_distinct(item)
+    , tp = sum(judgment == 1 & true_class == 1)
+    , fn = sum(judgment == 0 & true_class == 1)
+    , fp = sum(judgment == 1 & true_class == 0)
+    , tn = sum(judgment == 0 & true_class == 0)
+    , TPR = tp / (tp + fn)
+    , TNR = tn / (tn + fp) 
+  ) 
+```
+
+```{r plot performance 1, echo = FALSE}
+obs_performance %>% 
+  select(coder, n_judgments, TPR, TNR) %>% 
+  gather("metric", "value", -coder, -n_judgments) %>% 
+  ggplot(
+    aes(
+      x = value
+      , y = coder
+      , group = factor(metric)
+    )
+  ) +
+    geom_point(
+      aes(size = n_judgments)
+      , shape = 1
+      , color = "grey"
+      , alpha = .75
+    ) +
+    geom_point(
+      shape = 20
+      , size = .5
+    ) +
+    geom_point(
+      shape = 3
+      , data = tibble(
+        coder = rep(1:n_coders, 2)
+        , n_judgments = rep(2, n_coders*2)
+        , value = c(sim_codings$abilities$theta0, sim_codings$abilities$theta1)
+        , metric = rep(c("TNR", "TPR"), each = n_coders)
+      )
+      , aes(y = coder, x = value, group = coder, color = "red")
+    ) +
+    scale_x_continuous(breaks = seq(0,1,.2)) + 
+    scale_y_continuous(
+      breaks = 1:20
+      , limits = c(0.5, 20.5)
+    ) + 
+    scale_colour_discrete(guide = FALSE) +
+    facet_grid(~factor(metric)) + 
+    labs(
+      title = "Observed coder performance in simulated data vs. simulated ability paramaters"
+      # , subtitle = "Accuracies, true-negative rates (TNR), and true-positive rates (TPR)"
+      , subtitle = "Red crosses mark simulated parameter values"
+      , x = ""
+      , y = "Coder"
+      # , color = "Simulated parameter values"
+      , size = "No. judgments"
+      , caption = paste(
+        # "accuracy = (true-positives + true-negatives) / N",
+        "TFR = true-positives / (true-positives + false-negatives)",
+        "TNR = true-negatives / (true-negatives + false-positives)",
+        sep = "\n"
+      )
+    ) +
+    theme_bw() +
+    theme(
+      plot.caption = element_text(hjust = 0)
+      , legend.position = "top"
+    )
+```
+
+Summarizing this information confirms that there is no systematic deviation of observed from simulated abilities:
+```{r plot performance 2, echo = FALSE}
+obs_performance %>% 
+  select(coder, TPR, TNR) %>% 
+  arrange(coder) %>% 
+  mutate(
+    dev_theta0 = TNR - sim_codings$abilities$theta0
+    , dev_theta1 = TPR - sim_codings$abilities$theta1
+  ) %>% 
+  select(coder, "observed - true specificity" = dev_theta0, "observed - true sensitivity" = dev_theta1) %>% 
+  gather(param, val, -coder) %>% 
+  ggplot(aes(x = val)) +
+    geom_histogram(alpha = .75, bins = 10) + 
+    facet_grid(~param) +
+    theme_bw() + 
+    labs(
+      title = "Empirical vs. simulated abilities"
+      , x = NULL
+      , y = "Count"
+    )
+```
+Note also that the larger magnitude and mass of deviations of the observed sensitivities is due to the fact that in expectation we have four times more negative items than positive ones, so that coder's true-negative detection rates can be computed with higer precision than their true-positive detection rates.
+
+### Model implementation 
+
+Fitting the model using the `rjags` interface requires providing all information required to estimate the model in a list object.
+In my implementation I feed the following information to the JAGS code:[^2]
+
+- `N`, a scalar integer value specifying the number of items;
+- `M`, a scalar integer value specifying the number of coders;
+- `J`, a scalar integer value specifying the number of judgments; and
+- `y`, a data frame object with three columns:
+    - `item`, an integer counter indexing items,
+    - `item`, an integer counter identifying coders, and
+    - `judgment`, the judgment (0 or 1) of a given item by a given coder.
+    
+
+[^2]: I deviate from Carpenter's instructions in this regard as I find it more transparent to provide the codings data in an indexable dataframe rather than a stacked vector of zeros and ones.
+
+The JAGS code reads as follows and is, to my best understanding, a direct implementation of the hierarchical model formulation: 
+
+```{r def bba model jags}
+bba_model <- "model{
+    for (i in 1:N){
+        c[i] ~ dbern(pi)
+    }
+
+    for (j in 1:M) {
+        theta0[j]~ dbeta(alpha0, beta0);
+        theta1[j]~ dbeta(alpha1, beta1);
+    }
+
+    for (j in 1:J) {
+        y[j,3] ~ dbern(c[y[j,1]]*theta1[y[j,2]]+(1-c[y[j,1]])*(1-theta0[y[j,2]]))
+    }
+
+    pi ~ dbeta(1,1);
+    
+    # NOTE:
+    #   mean. = alpha./(alpha. + beta.) 
+    #   scale. = alpha. + beta.
+    
+    mean0 ~ dbeta(1,1);
+    scale0 ~ dpar(1.5,1);
+    alpha0 <- mean0*scale0;
+    beta0 <- scale0-alpha0;
+
+    mean1 ~ dbeta(1,1);
+    scale1 ~ dpar(1.5,1);
+    alpha1 <- mean1*scale1;
+    beta1 <- scale1-alpha1;
+}"
+```
+
+Note that since judgments are contained in the third column of the data frame `y`, I loop over all `J` judments and access them referring to `y[j,3]`. 
+$p$, The parameter that governs a judgments Bernoulli distribution, is either `theta1[y[j,2]]`, (i.e., the given item's coder's sensitivity estimate in the current iteration) if `c[y[j,1]]` (the given item's class estimate in the current iteration), or `1-theta1[y[j,2]]` otherwise.[^3]
+
+[^3]: The nested expressions using multiple indexes are due to my choice to provide the judgments in a tidy data frame.
+
+### Fitting the model
+
+I fit the model in R using functionality provided by the `rjags` interface to JAGS.
+Specifically, I obtain three chains with 1000 iterations of which 500 are treated as burn-in.[^4]
+All parameter estimates are retained (i.e., no thinning applied), since visual inspection of the autocorrelation plot for deviance information criterion (DIC) values indicated no need to discard estimates in order to mitigate autocorrelation (see footnote 6).
+
+[^4]: Note that I have defined a generic function to obtain data in this fromat from the simulated codings data.
+
+
+```{r fit baseline model}
+fit_path <- file.path("." ,"..", "fits", "evl_bba_model_fit.RData")
+
+# check if fit already obtained
+if (file.exists(fit_path)) {
+  bba_fit <- readRDS(fit_path)
+  baseline_fit <- bba_fit$fit
+  runtime <- bba_fit$runtime
+} else {
+  # for obtaining Deviance Information Criterion (DIC)
+  load.module("dic")
+  
+  # initialize model with 3 chains
+  basline_model <- jags.model(
+    file = textConnection(bba_model)
+    , data = get_codings_data(sim_codings$codings)
+    , inits = list(".RNG.name" = "base::Wichmann-Hill", ".RNG.seed" = this_seed)
+    , n.chains = 3
+  )
+  
+  t0 <- Sys.time()
+  # burn-in iterations
+  update(basline_model, 500)
+  
+  # fit model for 1000 iterations
+  basline_fit <- coda.samples(
+    basline_model
+    , variable.names = c(
+      # include DIC
+      "deviance"
+      # prevalence
+      , "pi"
+      # classes
+      , "c"
+      # coder ability parameters
+      , "theta0", "theta1"
+      # hyperprior governing Beta prior on coder sensitivities 
+      , "alpha0", "beta0"
+      # hyperprior governing Beta prior on coder specificities 
+      , "alpha1", "beta1"
+    )
+    # iterations
+    , n.iter = 500
+    # no thinning
+    , thin = 1
+  )
+  
+  runtime <- Sys.time() - t0
+  
+  
+  tryCatch(
+    list(
+      model = baseline_model
+      , fit = baseline_fit
+      , runtime = runtime
+      , seed = this_seed
+    ) %>% 
+      saveRDS(fit_path)
+    , error = function(err) message("Could not save model and fitted object to disk.")
+  )
+}
+```
+
+### Evaluating fit
+
+#### DIC values
+
+First, we want to see whether chains mix and the estimates converged. 
+Due to the abundance of parameters in BBA model, I use the DIC to assess mixture and convergence.[^5]
+
+[^5]: Not that I have defined `get_mcmc_estimates` as a generic function to extraxt parameter estimates from `coda::mcmc.list` objects. 
+
+
+```{r plot baseline deviance, echo = FALSE}
+bl_dic <- get_mcmc_estimates(fit.obj = baseline_fit, params = "deviance")
+
+grid.arrange(
+  ggplot(bl_dic, aes(x = iter, y = est, color = factor(chain))) +
+    geom_line(alpha = .5) +
+    theme_bw() +
+    labs(
+      title = "Deviance information criterion (DIC)"
+      , subtitle = "Obtained for baseline model specification"
+      , y = "DIC"
+      , x = "Iteration"
+      , color = "Chains:"
+    ) +
+    theme(
+      legend.position = "bottom"
+    )
+  , ggplot(bl_dic, aes(x = est)) + 
+    geom_density(fill = "grey", alpha = .75, color = NA) + 
+    theme_bw() +
+    labs(
+      title = "Distribution of DIC after burn-in"
+      , subtitle = "Obtained from 3 chains for 1000 iterations"
+      , x = "DIC"
+      , y = "Density"
+    )
+  , ncol = 2
+)
+```
+
+Chains mix nicely, and inspecting the shrinkage factor $\hat{R}$ and autocorrelation confirm that the model converged (see footnote).[^6]
+
+[^6]: Autocorrelation plots of BBA model fitted to simulated codings data:
+```{r gelman.plot baseline deviance, echo = FALSE}
+coda::autocorr.plot(baseline_fit[[1]][, "deviance"], auto.layout = F)
+coda::autocorr.plot(baseline_fit[[2]][, "deviance"], auto.layout = F)
+coda::autocorr.plot(baseline_fit[[3]][, "deviance"], auto.layout = F)
+```
+
+#### Posterior prevalence estimates 
+
+Plotting posterior estimates of $\pi$, we see that they nicely mix and converge as well.
+Also, the mean posterior estimate `r mean(unlist(baseline_fit[,"pi"]))` (the median posterior estimate `r median(unlist(baseline_fit[,"pi"]))`) comes very close to the true simulation parameter value of .2.
+
+```{r plot baseline pi, echo = FALSE}
+bl_pi <- get_mcmc_estimates(fit.obj = baseline_fit, params = "pi")
+
+grid.arrange(
+  bl_pi %>% 
+    ggplot(aes(x = iter, y = est, color = factor(chain))) +
+    geom_line(alpha = .5) +
+    theme_bw() +
+    labs(
+      title = expression(paste("Posterior estimates of ", pi))
+      , subtitle = "3 chains obtained from BBA model fitted to simulated data"
+      , y = expression(pi)
+      , x = "Iteration"
+      , color = "Chains:"
+    ) +
+    theme(
+      legend.position = "bottom"
+      , axis.title.y = element_text(angle = 0, vjust = .5)
+    )
+  , bl_pi %>% 
+    ggplot(aes(x = est)) + 
+    # geom_density(fill = "grey", alpha = .75, color = NA) + 
+    geom_histogram(fill = "grey", alpha = .75, color = NA, bins = 200) + 
+    scale_x_continuous(limits = c(0,1)) +
+    geom_vline(xintercept = pi, color = "red") +
+    theme_bw() +
+    labs(
+      title = expression(paste("Distribution of posterior estimates of ", pi))
+      , subtitle = "Red vertical line marks simulated parameter value"
+      , caption = "Obtained from BBA model fitted to simulated data"
+      , x = expression(pi)
+      , y = "Density"
+    ) +
+    theme(plot.caption = element_text(hjust = 0))
+  , ncol = 2
+)
+```
+
+#### Posterior hyperparameter estimates
+
+A look at the estimates of hyperameter values $\alpha_0, \beta_0$ and $\alpha_1, \beta_1$, respectively, that the model did recover these parameters very well.
+Indeed, the display of this plot is very similar to that of Carpenter's Figure 11, indicating that the model is able to recover the true Beta-distribution parameters used to generate the data.
+
+```{r inspect baseline hyperpars, echo = FALSE}
+post_hyperpars <- get_mcmc_estimates(
+  fit.obj = baseline_fit
+  , params = c("alpha0", "beta0", "alpha1", "beta1")
+  , use.regex = FALSE
+)
+
+true_hyperpars <- tribble(
+  ~scale, ~mean, ~param,
+  alpha0 + beta0, alpha0/(alpha0 + beta0), "theta[0]",
+  alpha1 + beta1, alpha1/(alpha1 + beta1), "theta[1]"
+)
+
+post_hyperpars %>% 
+  mutate(
+    param = sub(".+(\\d)$", "theta[\\1]", parameter)
+    , parameter = sub("\\d$", "", parameter)
+  ) %>% 
+  spread(parameter, est) %>% 
+  mutate(
+    scale = alpha + beta
+    , mean = alpha/(alpha + beta)
+  ) %>% 
+  ggplot(aes(x = mean, y = scale)) +
+    geom_point(alpha = .5, size = .5) +
+    geom_vline(
+      data = true_hyperpars
+      , aes(xintercept = mean)
+      , color = "grey"
+    ) +
+    geom_hline(
+      data = true_hyperpars
+      , aes(yintercept = scale)
+      , color = "grey"
+    ) +
+    scale_x_continuous(breaks = seq(.65,.9,.05)) +
+    scale_y_continuous(breaks = seq(0, 120, 40)) +
+    facet_grid(~param, labeller = label_parsed) +
+    labs(
+      title = "MCMC posterior estimates of hyperparamters in simulated data"
+      , subtitle = "Vertical and horizontal lines depict true simulation parameter values"
+      , x = expression(alpha[.]/(alpha[.]+beta[.]))
+      , y = expression(alpha[.]+beta[.])
+    ) +
+    theme_bw()
+```
+
+Note that @carpenter_multilevel_2008 [p. 22] stresses that "the lack of centering on the simulated value is not evidence of bias. Rather, it reflects the variance of the underlying sampling." 
+
+#### Posterior coder ability estimates
+
+Inspecting the marginal posterior densities of ability parameters by coder, we see model fares less well in recovering simulated ability values:
+
+```{r plot baseline mpdf thetas, echo = FALSE}
+post_thetas <- get_mcmc_estimates(fit.obj = baseline_fit, params = "^theta(0|1)\\[\\d+\\]$")
+
+post_thetas %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = gsub("\\]$", "", coder)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
+  ggplot(
+    aes(
+      y = factor(coder, levels = 1:n_coders)
+      , x = est
+      , group = coder
+    )
+  ) +
+  geom_density_ridges(
+    scale = .5
+    , color = NA
+  ) +
+  geom_point(
+    shape = 3
+    , color = "red"
+    , data = tibble(
+      coder = rep(factor(1:n_coders, levels = 1:n_coders), 2)
+      , parameter = rep(paste0("theta[", 0:1, "]"), each = n_coders)
+      , value = c(sim_codings$abilities$theta0, sim_codings$abilities$theta1)
+    )
+    , aes(y = factor(coder), x = value, group = coder)
+  ) +
+  # geom_point(
+  #   shape = 3
+  #   , data = obs_performance %>% 
+  #     select(coder, "theta[0]" = TNR, "theta[1]" = TPR) %>% 
+  #     gather(parameter, value, -coder)
+  #   , aes(y = factor(coder), x = value, group = coder)
+  # ) +
+  scale_x_continuous(limits = c(0,1))+
+  facet_grid(
+    rows = vars(parameter)
+    , labeller = label_parsed
+    , switch = "y"
+  ) + 
+  labs(
+    title = "Marginal posterior densities of ability parameters by coder"
+    , subtitle = "Red crosses mark simulated parameter values"
+    , x = ""
+    # , y = "Coder"
+    , y = ""
+    , fill = "Parameter"
+    , caption = expression(paste(
+      theta[0]," := specificity (true-negative rate); ",
+      theta[1]," := sensitivity (true-positive rate)"
+    ))
+  ) + 
+  coord_flip() +
+  theme_bw() +
+  theme(
+    strip.text.y = element_text(angle = 180)
+    # , strip.background = element_rect(fill = NA)
+    , plot.caption = element_text(hjust = 0)
+  )
+```
+
+For many coders, the mass of marginal posterior densities does not cover the simulated parameter values.
+Importantly, this cannot have much to do with the pull of the prior, since if this were the case, posterior density masses should be systematically remove from true values, which is not the case.[^6]
+
+[^6]: I also overlayed the plot with the observed true-positive and true-negative rates; again there was no pattern detectable. 
+
+In fact, as the next plot illustrates, estimates and true specificity values are negatively correlated, whereas for sensitivity parameters we obtain estimates that are weakly positively correlated with true values.
+
+```{r plot baseline thetas corr, echo = FALSE}
+post_thetas %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = as.integer(gsub("\\]$", "", coder))
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
+  group_by(coder, parameter) %>% 
+  summarise(
+    mean = mean(est)
+    , q5 = quantile(est, .05)
+    , q95 = quantile(est, .95)
+  ) %>% 
+  arrange(parameter, coder) %>% 
+  ungroup() %>% 
+  mutate(true_val = c(sim_codings$abilities$theta0, sim_codings$abilities$theta1)) %>% 
+  ggplot(aes(x = true_val, y = mean)) +
+    geom_smooth(method='lm', formula=y~x, se = FALSE, color = "red") +
+    geom_point(size = .5) +
+    geom_linerange(aes(ymin = q5, ymax = q95), width = .1) +
+    scale_x_continuous(limits = 0:1) +
+    scale_y_continuous(limits = 0:1) +
+    geom_abline(slope = 1, intercept = 0, size = .5, color = "grey") +
+    facet_grid(~parameter, labeller = label_parsed) +
+    labs(
+      title = "Mean posterior coder abilities vs. simulated parameter values"
+      , subtitle = "Points depict mean posterior values, overlaying vertical lines 90% credibility intervalls"
+      , x = "Simulated parameter value"
+      , y = "Posterior meanvalue"
+      , caption = "diagonal indicates perfect correspondence"
+    ) +
+    theme_bw() + 
+    theme(plot.caption = element_text(hjust = 0))
+```
+
+This result is sobering and stunning, since I basically chose the same simulation parameter values as @carpenter_multilevel_2008 [Subsection 3.2].
+Nevertheless, I cannot reproduce his Figure 9 (he demonstrates strong positive correlation between simulated and posterior mean values).
+
+#### Posterior classifications
+
+```{r inspect baseline class membership, echo = FALSE}
+post_c <- get_mcmc_estimates(fit.obj = baseline_fit, params = "c\\[\\d+\\]")
+
+bl_classification <- post_c %>% 
+  group_by(parameter) %>% 
+  summarise(pr_pos = mean(est)) %>% 
+  mutate(
+    item = as.integer(stringr::str_extract(parameter, "\\d+"))
+  ) %>% 
+  left_join(
+    sim_codings$codings %>% 
+      select(item, true_class) %>% 
+      unique()
+    ) %>% 
+  mutate(est_class = as.integer(pr_pos > .5)) 
+
+bl_accuracy <- bl_classification %>% 
+  mutate(aggreement = true_class == est_class) %>% 
+  summarise(accuracy = sum(aggreement)/n())
+```
+
+The model in its current implementation also performs poorly in recovering items true classes.
+Its accuracy in classifying items is only `r bl_accuracy$accuracy`.
+Indeed, we quiety confidently missclassify a sizable number of items:
+```{r categoy-wise residual error, echo = FALSE}
+these_classes <- post_c %>% 
+  mutate(
+    item = as.integer(stringr::str_extract(parameter, "\\d+"))
+  ) %>% 
+  left_join(
+    sim_codings$codings %>% 
+      select(item, true_class) %>% 
+      unique()
+  ) 
+
+these_classes %>% 
+  group_by(item) %>% 
+  summarise(
+    rce = case_when(
+      unique(true_class) == 0 ~ sum(est == 1)/n()
+      , unique(true_class) == 1 ~ sum(est == 0)/n()
+      , TRUE ~ NA_real_
+    )
+    , true_class = paste("true class =", unique(true_class))
+  ) %>% 
+  ggplot(aes(x = rce)) + 
+    geom_histogram(alpha = .75, bins = 20) +
+    # scale_y_continuous(
+    #   trans = scales::trans_new(
+    #     name = "log2+1"
+    #     , transform = function(x) {log2(x+1)}
+    #     , inverse = function(x) {(2**x)-1}
+    #     , domain = c(0, Inf)
+    #   )
+    # ) +
+    facet_grid(~true_class) + 
+    labs(
+      title = "Histograms of residual errors of posterior classifcations by class."
+      , x = "Residual classification error"
+      , y = "Count"
+    ) +
+    theme_bw()
+```
+
+To generate this plot, I have computed classification error as the proportion of assginments to the positive class if true class is negative, and the proportion of assginments to the negative class if true class is positive.
+All items with residual error > .5 are misclassified.
+The group of items with residual error close to 1 is very confidently misclassified.
+
+I also replicate Carpenter's Figure 12, for which I computes residual 'category' (classification) error simply be substracting posterior mean class estimates from true class values (mind slaling of y-axis).
+
+```{r residual category error, echo = FALSE}
+these_classes %>% 
+  group_by(item) %>% 
+  summarise(rce = unique(true_class) - mean(est)) %>% 
+  ggplot(aes(x = rce)) + 
+    geom_histogram(alpha = .75, bins = 20) +
+    scale_y_continuous(
+      trans = scales::trans_new(
+        name = "log2+1"
+        , transform = function(x) {log2(x+1)}
+        , inverse = function(x) {(2**x)-1}
+        , domain = c(0, Inf)
+      )
+    ) +
+    labs(
+      title = "Histogram of residual errors of posterior classifcations."
+      , x = "Residual classification error"
+      , y = "Count"
+    ) +
+    theme_bw()
+```
+
+This underlines that when I fit the BBA model to the simulated data, it performs far worse than what Carpenter schows.
+
+
+
+### Summary
+
+The model does a good job to recover hyperparameter values,
+but performs relatively poorly in recovering coder abilities and items' true classes.
+I don't understand why I could not reproduce Carpenter's results.
+A hunch is that because he constrained ability parameter estimates to be greate than .5 in order to avoid that chains converge on the revers parameter assignment (an approach he does not recommend in realistic settings), he artificially inflates the correlation between ability paramter estimates and true values.
+
+
+## References

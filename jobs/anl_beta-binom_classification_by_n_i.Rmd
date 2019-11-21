@@ -1,0 +1,1015 @@
+---
+title: Analyize performance of Beta-Binomial by Annotator model in simulated data
+  as the number of judgements aggregated per item varies
+author: "Hauke Licht"
+date: "2019-03-05"
+output: html_document
+---
+
+```{r knitr setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE
+  , warning = FALSE
+  , message = FALSE
+  , fig.align = "center"
+)
+```
+## Intro
+
+In another analysis,[^1] I've verified that the Beta-Binomial by Annotator model fits well to simulated codings/annotations data if it is provided with reasonable starting values when initializing.
+Below, I will use the same simulated codings data to analyize how the quality of model-based estimates is varies by the number of judgments per item aggregated to obtain model fits.
+
+[^1]: See https://github.com/haukelicht/presentation_ecpr_bayes_2019
+
+Specifically, in the simulated codings data we have sampled judgments from $n_i = 10$ (out of 20) distinct coders for each item $i = 1, \ldots, N$. 
+This resulted in a dataframe with $J = 10 \times N = 10,000$ judgments indexed by $i$ (item) and $j$ (coder).
+
+Here, I fit the same annotation models to random subsamples of this data, and analyize how model fit and the quality of estimates changes as the number of judgments sampled per item is varied.
+Specifically, for each $n_i = 3,\ldots,10$, I randomly sample $n_i$ judgements per item and fit an bet-binomial by annotator model to this data. 
+
+## Fitting annotation models to $n_i$-sized subsamples of codings data
+
+First, we'll load all pacakages we need to perform the analysis, set the seed, and define some helper functions:
+```{r general setup, echo = TRUE}
+
+# set the file path
+file_path <- file.path("~", "switchdrive", "Documents", "work", "phd", "methods", "crowd-sourced_annotation")
+
+# load required namespaces
+library(rjags)
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggridges)
+library(irr)
+library(icr)
+
+# set seed
+set.seed(1234)
+
+# define helpers
+
+#' Function creating JAGS model data input from codings data
+#' 
+#' @description Given a codings dataframe with columngs 'item', 'coder', and 'judgement', 
+#'     function returns a list object that can be passed to \code{data} argument 
+#'     of \[rjags]{jags.model} function fitting a beta-binomial by annotator model
+#'     
+#' @param Given codings dataframe with columngs 'item', 'coder', and 'judgement'
+#' 
+#' @return A list object with elements 
+#'     'N' (the number of items, scalar integer),
+#'     'M' (the number of coders, scalar integer),
+#'     'J' (the number of judgements, scalar integer), and
+#'     'y' (dataframe with columns 'item', 'coder' and 'judgment').
+get_codings_data <- function(codings.df) {
+  
+  out <- list() 
+  
+  out$N <- length(unique(codings.df$item))
+  out$M <- length(unique(codings.df$coder))
+  out$J <- length(codings.df$judgment)
+  out$y <- codings.df %>% 
+    arrange(item, coder) %>% 
+    select(item, coder, judgment)
+  
+  return(out)
+}
+
+#' Obtain parameter estimates from MCMC fit object
+#' 
+#' @descritpion Given an \code{mcmc.list} object created by fitting a JAGS model,
+#'      and a list of parameters of interest, the function returns the 
+#'      parameter estimates for each chain and all iterations in a tidy dataframe
+#' 
+#' @param fit.obj A \code{mcmc.list} containing the parameter estimates for all iterations and all chains obtained by fitting a JAGS model using \code[rjags]{}
+#' 
+#' @param params A character vector specifiying the parameters of interest.
+#'    If \code{use.regex = TRUE} (the default), regular expressions will be expected.
+#' 
+#' @param use.regex Logical, specifying whether \code{params} is defined using regular expressions
+#'    Defaulting to \code{TRUE}
+#'
+#' @return A tidy dataframe with columns
+#'    'parameter' (the paramenter, character),
+#'    'chain' (chain counter, integer),
+#'    'est' (the estimate), and
+#'    'iter' (iteration counter, integer)
+#'
+#' @note Functionality comparable to the \code[ggmcmc]{ggs} function in the \code[ggmcmc]{ggmcmc} pacakge.
+#'
+#' @importFrom tibble tibble
+#' @importFrom purrr map_df
+#' @importFrom dplyr mutate
+#' @importFrom dplyr row_number
+#' @importFrom dplyr `%>%`
+#' 
+get_mcmc_estimates <- function(fit.obj, params, use.regex = TRUE){
+  
+  if (!inherits(fit.obj, "mcmc.list"))
+    stop("`fit.obj` must be a 'mcmc.list' object")
+  
+  # test number of chains (equals No. top-level list elements)
+  if ( (n_chains <- length(fit.obj)) == 0)
+    stop("`fit.obj` has zero length")
+  
+  # get parameters contained in fit object
+  these_params <- colnames(fit.obj[[1]])
+  
+  # get index positions of parameters to be obtained
+  if (use.regex) {
+    idxs <- which(grepl(params, these_params))
+  } else {
+    if (any((miss_params <- !params %in% these_params)))
+      warning(
+        "The following `params` are not contained in `fit.obj`: ", 
+        paste0("'", params[miss_params], "'", collapse = ", ")
+      )
+    idxs <- which(these_params %in% params)
+  }
+  
+  # obtain parameter estimates in tidy data frame
+  suppressWarnings(
+    purrr::map_df(these_params[idxs], function(param, obj = fit.obj){
+      purrr::map_df(1:n_chains, function(c, o = obj, p = param) {
+        tibble::tibble(
+          parameter = param
+          , chain = c
+          , est = o[[c]][, p]
+        ) %>% 
+          dplyr::mutate(iter = dplyr::row_number())
+      })
+    })
+  )
+}
+
+
+```
+
+Next I generate the simulated codings data.
+
+```{r simulate codings, echo = TRUE, eval = FALSE}
+n_items <- 1000
+n_coders <- 20
+pi <- .2
+alpha0 <- 40
+beta0 <- 8
+alpha1 <- 20
+beta1 <- 8
+missing_rate <- .5
+
+source(file.path(file_path, "jobs", "sim_codings_data.R"))
+
+```
+
+```{r load sim codings}
+sim_codings <- readRDS(file.path(file_path, "data", "sim_codings_n1000_n_i10.RData")) 
+```
+
+This data is then used to randomly sample $n_i$ judgements per item, where  $n_i$ is increased from 3 to 10 in integer stepts.
+To each of this $n_i$-sample datasets, I fit a Bayesian beta-binomial by annotator model. 
+This model estimates 
+
+- the prevalence of positive items $pi$, 
+- item's classes $c_i$ for all $i \in 1,\ldots, n$, 
+- coders' specificities and sensitivities $\theta_j0$ and $\theta_{j1}$, respectively, as well as 
+- the shape hyper-parameters of the Beta-distributions that govern coders abilities. 
+
+To fit this model to the different codings subsamples, I randomly generate initial values to induce convergence of MCMCs on the correct parameter assignment.
+These starting values are used to initialize the model. 
+Each model is fitted wis three chains.
+I run 500 burn-in iterations, and 1000 further iterations are used to sample from the posterior.
+
+```{r fit s-models, eval = FALSE, echo = TRUE, warning = TRUE}
+
+# define general parameters
+n_chains <- 3
+n_burnin <- 500
+n_iter <- 1000
+n_thinning <- 1
+
+# model file path
+model_file_path <- file.path(file_path, "models", "beta-binomial_by_annotator.jags")
+
+# creat list of lists with initialization values for thetas and pi 
+init_vals <- lapply(1:n_chains, function(chain) {
+  
+  out <- list()
+  out[["theta0"]] <- rbeta(n_coders, 8, 2)
+  out[["theta1"]] <- rbeta(n_coders, 8, 2)
+  out[["pi"]] <- rbeta(1, 2, 8)
+  out[[".RNG.name"]] <- "base::Wichmann-Hill"
+  out[[".RNG.seed"]] <- 1234
+  
+  return(out)
+})
+
+s_fitted <- map(
+  3:10
+  , function(
+      s
+      , max.s = 10L
+      , n.trials = 3L
+      , model.file = model_file_path
+      , init.vals = init_vals
+      , n.chains = n_chains
+      , n.burnin = n_burnin
+      , n.iter = n_iter
+      , n.thinning = n_thinning
+  ){
+  
+  out <- list()
+  
+  for (t in 1:n.trials) {
+    # sample s judgements per item
+    dat <- sim_codings %>% 
+      group_by(item) %>% 
+      sample_n(s, replace = FALSE)
+
+    # write sampled indices to output list
+    out$samples <- dat %>% select(item, coder)
+    
+    # try to initialize model on sampled judgments
+    out$model <- tryCatch(
+      jags.model(
+        file = model.file
+        , data = get_codings_data(dat)
+        , inits = init.vals
+        , n.chains = n.chains
+      )
+      , error = function(err) err)
+      
+    # proceed if initialization succeeded
+    if (inherits(out$model, "jags"))
+        break
+    
+    # else return without fit 
+    if (t == n.trials){
+      out$model <- NA
+      out$fit <- NA
+      warning("Could not initialize model on subsample of ", s, " judgments after ", t, " trials.")
+      return(out)
+    }
+  }
+
+  # try to update model
+  updated <- tryCatch(update(out$model, n.burnin), error = function(err) err)
+    
+  # if update fails, return without fit 
+  if (inherits(updated, "error")){
+    out$fit <- NA
+    warning("Could not update model on subsample of ", s, " judgments.")
+    return(out)
+  }
+  
+  # try to fit model
+  out$fit <- tryCatch(
+    coda.samples(
+      out$model
+      , variable.names = c(
+        "deviance"
+        , "pi"
+        , "c"
+        , "theta0", "theta1"
+      )
+      , n.iter = n.iter
+      , thin = n.thinning
+    )
+    , error = function(err) err
+  )
+  
+  # if fitting fails, return without fit 
+  if (inherits(out$fit, "error")){
+    out$fit <- NA
+    warning("Could not fit model on subsample of ", s, " judgments.")
+    return(out)
+  }
+  
+  # else, return without output list including fit 
+  return(out)
+})
+```
+
+```{r load s-fits}
+s_fitted <- readRDS(file.path(file_path, "fits", "betabinom_by_annotator_vary_n_i.RData"))
+```
+
+
+## Inspecting model fit
+
+Before starting to analyize how the quality of model-based estimates varies with $n_i$, we first need to inspect model fit. 
+Due to the large number of estimated parameters, we'll judge convergence by inspecting the deviance information criterions.
+
+```{r plot deviance by s}
+post_dic <- map_df(.x = s_fitted, .id = "s", .f = function(s){
+  get_mcmc_estimates(s$fit, "deviance")
+}) %>% 
+  mutate(s = as.integer(s) + 2L)
+
+post_dic %>% 
+  ggplot(aes(x = iter, y = est, color = factor(chain))) +
+  geom_line(alpha = .5) +
+  facet_grid(
+    rows = vars(s)
+    , scales = "free_y"
+  ) + 
+  theme_bw() +
+  labs(
+    title = expression(paste("Deviance information criterion (DIC) for models with ",s,"-sized judgment sets."))
+    , subtile = "Obtained for beta-binomial by annotator model fitted for 1000 iterations each"
+    , y = "DIC"
+    , x = "Iteration"
+    , color = "Chains:"
+    , caption = expression(paste("Panels separated by ", s==n[i], ", the number of judgments per item."))
+  ) +
+  theme(
+    legend.position = "none"
+    , plot.caption = element_text(hjust = 0)
+  )
+
+post_dic %>% 
+  ggplot(aes(x = est)) + 
+  geom_density(fill = "grey", alpha = .75, color = NA) + 
+  facet_grid(
+    cols = vars(s)
+    , scales = "free_x"
+  ) + 
+  theme_bw() +
+  labs(
+    title = expression(paste("Distribution of DIC for models with ",s,"-sized judgment sets."))
+    , subtitle = "Obtained from 3 chains for 1000 iterations"
+    , x = "DIC"
+    , y = "Density"
+    , caption = expression(paste("Panels separated by ", s==n[i], ", the number of judgments per item."))
+  ) +
+  theme(
+    plot.caption = element_text(hjust = 0)
+  )
+```
+
+While the first figure allwos to confirm that for all sizes of $n_i$, models converged nicely (as indicated by mixing of the DIC estimates 'chains'),
+the second figure allwos to confirm that the pull of the prior is the stronger the lower $n_i$, which is due to the fewer datasets used to initialize, update, and fit the model when $n_i$ is low.
+Generally, there are no apparent convergence problems.
+
+## Inspecting parameter estimates
+
+### Prevalence
+
+```{r plot pis}
+post_pis <- map_df(.x = s_fitted, .id = "s", .f = function(s){
+  get_mcmc_estimates(s$fit, "pi")
+}) %>% 
+  mutate(s = as.integer(s) + 2L)
+
+post_pis %>% 
+  group_by(s, parameter) %>% 
+  summarise(
+    mean = mean(est)
+    , q5 = quantile(est, .05)
+    , q95 = quantile(est, .95)
+  ) %>% 
+  ggplot(aes(x = s, y = mean)) +
+  geom_violin(
+    data = post_pis
+    , mapping = aes(x = s, y = est, group = s)
+    , color = NA, fill = "grey", alpha = .75
+  ) +
+  geom_point() +
+  geom_linerange(aes(ymin = q5, ymax = q95)) +
+  theme_bw() +
+  scale_x_discrete(labels = 3:10) +
+  labs(
+    title = expression(paste(
+      "Location and dispersion of posterior density of ", pi, " as function of ", n[i]#,", the number of judgments aggregated per item."
+    ))
+    , subtitle = "Shaded areas depict posterior densities, dots mean values, vertical lines 90% credibility intervalls."
+    , y = expression(pi)
+    , x = expression(n[i])
+    , caption = expression(paste(
+      "Estimates obtained by fitting beta-binomial by annotator models to randomly sampled subsets of ", 
+      n[i], 
+      " judgements per item."
+    ))
+  ) + 
+  theme(
+    axis.title.y = element_text(angle = 0, vjust = .5)
+    , plot.caption = element_text(hjust = 0)
+  )
+```
+
+As could be observed in the case of DIV values, estimates of $\pi$, the population prevalence of positive classes, are the more uncertain, the lower $n_i$, as indicated by the wider span of low-$n_i$ estimates' 90% credibility intervals.
+
+```{r test diff pi and sd, include = FALSE}
+sum_post_pis <- post_pis %>%
+  group_by(s) %>% 
+  summarise(
+    mean = mean(est)
+    , sd = sd(est)
+  )
+
+summary(lm(mean ~ poly(s, 2), sum_post_pis))
+summary(lm_pi_sd <- lm(sd ~ poly(s, 2), sum_post_pis))
+```
+
+Indeed, modeling the standard deviation of posterior values at different values of $n_i$ as a function of $n_i$ with a second-order polynomial (and an intercept) yields a stastically significant (at $\alpha = .0001$) effect coefficients on both the first- and second order terms. 
+Sepcifically, the positive effect of the second-order (i.e., squared) term indicates that the effect of increasing $n_i$ levels-off at around $n_i = 8$.
+ 
+```{r plot sd decrease pi}
+sum_post_pis %>% 
+  cbind(predict(lm_pi_sd, tibble(s = 3:10), interval = "conf", level = .9)) %>% 
+  ggplot(aes(x = s, y = fit, ymin = lwr, ymax = upr)) + 
+  geom_point() +
+  geom_linerange() +
+  scale_y_continuous(limits = c(0,.055)) +
+  geom_point(aes(y = sd), shape = 1, col = "red") +
+  theme_bw() +
+  labs(
+      title = expression(paste("Observed and predicted change in uncertainty of posterior estimate of ", pi))
+      , subtitle = "Black dots indicate predicted values, vertical lines 90% confidence intervals, red circles observed values."
+      , y = expression(SD(pi))
+      , x = expression(n[i])
+      , caption = expression(paste("Estimates obtained by modeling ", SD(pi), " as a as second-order polynomial of ", n[i]))
+  ) + 
+  theme(
+    plot.caption = element_text(hjust = 0)
+  )
+```
+
+
+There is also a slight (but statistically insignificant at $\alpha = .05$) tendency of mean posterior values to converge on the true parameter of .2 as $n_i$ increases, which, again, is due to the larger amount and hence stronger pull away from the (flat) prioir in large-$n_i$ codings data.  
+
+### Posterior class estimates
+
+Next, we examine to what extent the uncertainty in items' posterior class estimates[^2] decreases systematically as $n_i$, the number of judgments aggregated per item, is increased in integer steps from 3 to 10.
+
+[^2]: The uncertainty in items' posterior class estimates, or posterior classification uncertainty, is measured as $\text{SD}(\mathbf c_i) = \sqrt\frac{\sum_{t=1}^T (c_{it} - \bar{c}_i)^2}{T-1} $, where $t$ indexes the $t^{th}$ estimate and here $T = 1000 \times 3$ (iterations times chains).
+
+We expect that as more and more judgments are agregated per item classification uncertainty decreases.
+This has two reasons.
+For one, as $n_i$ increases, there is generally more data that can be leveraged to estimate items' true classes.
+In expectation, this will render the impact of a single, randomly sampled and comparatively bad coder less strong.
+For another, more data also allows to estimate coders abilities with higher precision, since increasing $n_i$ increases also the expected number of items judged by a coder and hence the amount of data based on which her ability can be estimated.
+As a consequenx, there are not only more judgments per item, but on overage there is also less uncertainty about coders' abilities, and the judgments of relatively able coders will be up-weighted more often as iterations proceed.
+
+```{r get post classes}
+post_cs <- map_df(.x = s_fitted, .id = "s", .f = function(s){
+  get_mcmc_estimates(s$fit, "c\\[\\d+\\]")
+}) %>% 
+  mutate(s = as.integer(s) + 2L)
+```
+
+
+```{r plot change in SD of Cs}
+post_cs_sds <- post_cs %>% 
+  group_by(s, parameter) %>% 
+  summarise(sd = sd(est)) %>% 
+  mutate(
+    item = as.integer(gsub("^c\\[(\\d+)\\]$", "\\1", parameter))
+  )
+
+post_cs_sds_sum <- post_cs_sds %>% 
+  group_by(s) %>% 
+  summarise(
+    mean = mean(sd)
+    , q5 = quantile(sd, .05)
+    , q95 = quantile(sd, .95)
+  ) 
+
+ggplot(post_cs_sds_sum, aes(x = s, y = mean)) +
+  geom_violin(
+    data = post_cs_sds
+    , mapping = aes(x = s, y = sd, group = s)
+    , color = NA, fill = "grey", alpha = .75
+  ) +
+  scale_y_continuous(limits = c(0,.6)) +
+  geom_point() + 
+  geom_linerange(aes(ymin = q5, ymax = q95)) +
+  theme_bw() +
+  labs(
+    title = expression(paste(
+      "Item-level posterior classification uncertainty as function of ", n[i]#,", the number of judgments aggregated per item."
+    ))
+    , subtitle = "Shaded areas depict posterior densities, dots indicate mean values, vertical lines 90% intervalls."
+    , y = expression(paste("Item-level classification uncertainty ", SD(bold(y)[i])))
+    , x = expression(n[i])
+    , caption = expression(paste(
+      "Uncertainty measured as ",
+      SD(bold(c)[i])==sqrt(frac(sum((c[it]-bar(c)[i])^2, t==1, 'T'), 'T'-1)),
+      " where ", 'T'==3%*%1000, " is the number of estimates ", c[it], " aggregated across chains"
+    #   # " where D = 3 x 1000 is the number of estimates aggregated across chains and iterations, and ",
+    #   # bar(c)[i]==frac(1, D)*sum(c[it], t==1, D)
+    ))
+  ) + 
+  theme(plot.caption = element_text(hjust = 0))
+```
+
+Two things are worth highlighting.
+
+1. The average classification uncertainty indeed decreases (sublinearily) as $n_i$ increases.
+2. Wheras for $n_i = 3$ for a substantial numbers of items the posterior classification uncertainty is close to the maximum of ~0.5,[^3] the share of items to which this applies is already radically decreased for $n_i \geq 6$.
+3. Even at $n_i = 10$, there remain 5 percent of items with $\text{SD}_i >$ `r subset(post_cs_sds_sum, s == 10, q95)`.
+
+
+[^3]: For odd $T$, $\text{SD}(\mathbf c_i)$ is maximized when $\bar{c}_i = .5$, since $n_t = C \times T = 3 \times 1000 \forall i \in 1,\ldots, n$ and $c_{it} \in \{0, 1\}$. This maximum corresponds to an item that is classified as positive in 50% of estimates (i.e., $\bar{c}_i = .5$). In contrast, $\text{SD}_i$ is minimized when $\bar{c}_i \in \{0,1\}$, i.e., when $i$ is classified unambigously across iterations and chains.
+
+```{r model Cs sd decrease, eval = FALSE}
+post_cs_avg_sds <- post_cs_sds %>% 
+  group_by(s) %>% 
+  summarise(
+    mean = mean(sd)
+    , sd = sd(sd)
+  )
+  
+summary(lm(mean ~ poly(s, 2), post_cs_avg_sds))
+summary(lm(sd ~ poly(s, 2), post_cs_avg_sds))
+```
+
+The above figure may be mistaken to suggest that there are basically only two types of items:
+the one type corresponding to items for which aggregating more and more judgments leads to classification qualitiy improvements (i.e., classification uncertainty reduction),
+and the other type corresponding to those items for which aggregating more judgments does not affect the classification uncertainty observed already at low values of $n_i$.
+However, the next figure reveals that there exists indeed a third type of items: items for which agreegting more judgements leads to *more* classification uncertainty:
+
+```{r plot Cs uncertainty de vs increase}
+post_cs_sd_dpn <- post_cs_sds %>% 
+  group_by(parameter) %>% 
+  summarise(avg_delta_is_neg = mean(sd - lag(sd, order_by = s), na.rm = TRUE) <= 0)
+
+plot_dat <- post_cs_sds %>% 
+  left_join(post_cs_sd_dpn) %>%
+  mutate(
+    Density = TRUE
+    , Proportion = TRUE
+  ) %>% 
+  gather(geom, flag, -s, -parameter, -sd, -avg_delta_is_neg)
+
+ggplot() + 
+  geom_density(
+    data = subset(plot_dat, geom == "Density")
+    , mapping = aes(x = sd, fill = factor(avg_delta_is_neg))
+    , color = NA, alpha = 0.66
+  ) +
+  geom_density(
+    data = subset(plot_dat, geom == "Proportion")
+    , mapping = aes(x = sd, y = stat(count), fill = factor(avg_delta_is_neg))
+    , position = "fill"
+    , color = NA, alpha = 0.66
+  ) + 
+  scale_fill_manual(
+    labels = c("> 0", "≤ 0")
+    , values = RColorBrewer::brewer.pal(3,name = "Set2")[2:1]
+  ) + 
+  facet_grid(
+    cols = vars(s)
+    , rows = vars(geom)
+    , scales = "free"
+    , switch = "y"
+  ) +
+  theme_bw() +
+  labs(
+    title = expression(paste(
+      "Empirical distribution of item-level posterior classification uncertainty as function of ", n[i]))
+    , subtitle = "Differences between items with an average increase in posterior classification uncertainty vs. others"
+    , x = expression(paste("Item-level classification uncertainty ", SD(bold(y)[i])))
+    , y = ""
+    , fill = "Average change in posterior classification uncertainty"
+    , caption = "
+Items grouped by whether or not the change in posterior classification uncertainty when increasing the number
+of judgments aggregated per item (top panels) in integer steps is on average positive."
+  ) +
+  theme(
+    legend.position = "top"
+    , plot.caption = element_text(hjust = 0)
+  )
+```
+
+To generate this figure, I have first computed for each item changes in posterior classification uncertainty measured as $\text{SD}(\mathbf c_i)$ for adjacent values of $n_i$ (i.e., $\Delta_{t}\left(\text{SD}(\mathbf c_i)_{t}, \text{SD}(\mathbf c_i)_{t-1}\right)$ for $t = n_i = 4,\ldots, 10$). 
+I have then averaged these changes at the item-level over simulated values of $n_i$.
+This allowed to identify items for which this average change was positive, that is, items for which aggregating more and more judgments did not lead to posterioir classification uncertainty reduction but *increases*.
+The figure then shows that while these uncertainty-increasing items are mixed with other items (i.e., items that exhibit no or a negative average rate of change in posterior classification uncertainty as $n_i$ is increased), they tend to separate from the latter group as $n_i$ is increased.
+Thus, not only does using $n_i \geq 7$ judgments per item allow to substantially decrease posterior classification uncertainty in most items, but it also allows to identify items for which collecting more judgments is unlikely to result a reduction in classification uncertainty.
+Put differently, choosing higher values of $n_i$ allows to gain certainty about the classification of most items, and it helps to identify the minority of 'difficult' items, for which sampling additional judgments from the same population of coders is unlikely to improve classification.
+
+This finding also has practical implications for human judgment based classification exercises in setting with real (i.e., non-simulated data).
+First, it is advisable to collect more than three or four judgments per item, because with low values of $n_i$ it is not possible to separate ordinary from difficult items.
+Second, selective sampling strategies based on posterior classification undertainty are likely yielding efficiency gains:
+Some items can be classified with low posterior uncertainty already for low values of $n_i$. 
+For these items, no more judgments need to be sampled.
+Other items posterior classification uncertainty can be drastically decreased by sampling only a few more judgements. How many additional judgments need to be sampled can be determined using an iterative selective resampling procedure.
+Finally, the group of difficult items tends to separate from ordinary items already at moderately high values of $n_i$, say five. 
+For these items, too, no more judgments need to be sampled, since additional judgments are lilely not improving the quality of posterior classifications.
+
+What is perhaps most important for practioneers is that this evaluative strategy can completely dispense with gold standard items since model-based posterior classification uses only judgements and requires no knowledge of items' true classes.
+More generally, the utility of this model-based approach to judgment-based classification becomes apparent when we look at how conventional intercoder reliability statistics relate to differnt values of $n_i$.
+
+### Comparison: Intercoder reliability 
+
+In order to analyize the relationship between intercoder reliability and the number of judgments collected per item we compute 1000 bootstrapped values of Fleiss's $\kappa$ for each value of $n_i = 3,\ldots, 10$, a conventional chance-adjusted intercoder reliability metric.[^4]
+Fleiss's $\kappa$ is used instead of Krippendorff's $\alpha$ because the latter only assesses agreement among pairs of coders, whereas $\kappa$ takes into account all $m = n_i$ judgments per item to estimate total relability.
+Bootstrap was used to obtain uncertainty estimates of $n_i$-specific estimates
+
+[^4]: Ordinary non-parametric bootstraps were performed.
+
+```{r bootstrap ICR statistics, eval = FALSE, echo = TRUE}
+# define number of bootstraps
+boot_size <- 1000L
+
+# compute Fleiss's kappa for judgments in samples n[i] = 3,...,10
+
+#' Helper function passed to \code[boot]{boot}'s \code{statistic} argument to compute 
+#'     Fleiss's kappa
+#'     
+#' @description Given a Item X Coders judgements/ratings dataframe and row indices,
+#'     function returns Fleiss's kappa
+#'     
+#' @param d a Item X Coders judgements/ratings dataframe
+#' 
+#' @param idxs row indices used to sample from \code{d} when bootstrapping
+#' 
+#' @return Fleiss's kappa in the (subsetted) ratings daat as a scalar numeric value 
+#' 
+#' @importFrom irr kappam.fleiss
+compute_fleiss_kappa <- function(d, idxs){
+  irr::kappam.fleiss(
+    ratings = d[idxs, ]
+    , exact = FALSE
+    , detail = FALSE
+  )$value
+}
+
+# compute 1000 bootstrapped Fleiss's kappa statistics for each of the n[i]-sized subsamples of judgments
+kappas <- map_df(
+  .x = s_fitted
+  , .id = "s"
+  , .f = function(s, boot.size = boot_size) {
+    out <- s$samples %>% 
+      group_by(item) %>% 
+      mutate(row = row_number()) %>% 
+      left_join(sim_codings, by = c("item", "coder")) %>% 
+      select(-true_class, -coder) %>% 
+      # `compute_fleiss_kappa` expects Item X Coder format, hence reshape
+      spread(row, judgment, sep = "_") %>% 
+      ungroup() %>% 
+      select(-item) %>% 
+      boot::boot(
+        data = .
+        , statistic = compute_fleiss_kappa
+        , R = boot.size
+        , sim = "ordinary"
+        , stype = "i"
+        , parallel = "multicore"
+      )
+    
+    tibble(kappa = out$t[,1])
+  }) %>% 
+  mutate(s = as.integer(s) + 2L)
+
+# compute Krippendorff's alpha for judgments in subsamples of sizes n[i] = 3,...,10
+kalphas <- map_df(
+  .x = s_fitted
+  , .id = "s"
+  , .f = function(s, boot.size = boot_size) {
+    s$samples %>% 
+      ungroup() %>% 
+      left_join(sim_codings, by = c("item", "coder")) %>% 
+      select(-true_class) %>% 
+      # `icr::krippalpha` expects Coder X Item format, hence reshape
+      spread(item, judgment, sep = "_") %>% 
+      select(-coder) %>% 
+      as.matrix() %>% 
+      icr::krippalpha(
+        data = .
+        , metric = "nominal"
+        , bootstrap = TRUE
+        , nboot = boot.size
+        , cores = 2
+      ) %>% 
+      .$bootstraps %>% 
+      tibble(kalpha = .)
+  }) %>% 
+  mutate(s = as.integer(s) +2L)
+```
+
+
+```{r load bs ICR statistics}
+icr_bs <- readRDS(file.path(file_path, "data", "sim_codings_bs_realiability_n_i3-10.RData"))
+kalphas <- icr_bs$krippendorffs_alphas
+kappas <- icr_bs$fleiss_kappas
+```
+
+The following plot summarizes the distribution of bootstrapped $\kappa$ values for each value of $n_i$.
+Dots depict mean values and vertical bars 90$ confidence intervals.
+
+```{r plot bs kappas}
+kappas %>%
+  group_by(s) %>%
+  summarise(
+    mean = mean(kappa)
+    , sd = sd(kappa)
+    , q5 = quantile(kappa, .05)
+    , q95 = quantile(kappa, .95)
+  ) %>%
+  ggplot(aes(x = s, y = mean)) +
+  geom_violin(
+    data = kappas
+    , mapping = aes(x = s, y = kappa, group = s)
+    , color = NA
+    , fill = "grey"
+    , alpha= .75
+  ) +
+  geom_point() +
+  geom_linerange(aes(ymin = q5, ymax = q95)) +
+  theme_bw() +
+  labs(
+    title = expression(paste(
+      "Intercoder reliability as function of ", n[i]#,", the number of judgments aggregated per item."
+    ))
+    , subtitle = "Shaded areas summarize 1000 bootstrapped values, dots mean values, and vertical lines 90% confidence intervalls."
+    , x = expression(n[i])
+    , y = expression(paste("Fleiss' ", kappa))
+  ) 
+
+```
+
+Two observations can be made:
+
+1. On average, $\kappa$ increases (linearily) as $n_i$ is increased.
+2. Uncertainty in $\kappa$ decreases (sublinearily) as $n_i$ is increased.
+
+These observations are confirmed when modeling averages and uncertainty as a function of $n_i$.
+Specificially, $n_i$-specific mean $\kappa$ values were modeled as first-order polynomial (i.e., linear function) of $n_i$,
+whereas uncertainty was measures as $n_i$-specific standard deviation in bootstraped $\kappa$ values and modeled as second-order polynomial (i.e., linear function with a squared term) of $n_i$.[^5]
+
+The following figure plots predicted versus observed values for both summary statistics:[^6]
+```{r plot bs sum kappas}
+sum_kappas <- kappas %>% 
+  group_by(s) %>% 
+  summarise(
+    mean = mean(kappa)
+    , sd = sd(kappa)
+  )
+
+lm_mean_kappa1 <- lm(mean ~ poly(s, 1), sum_kappas)
+lm_mean_kappa2 <- lm(mean ~ poly(s, 2), sum_kappas)
+lm_mean_kappa_anova <- anova(lm_mean_kappa1, lm_mean_kappa2)
+# # F-test indicates that adding a second-order term does not improve fit
+
+lm_sd_kappa1 <- lm(sd ~ poly(s, 1), sum_kappas)
+lm_sd_kappa2 <- lm(sd ~ poly(s, 2), sum_kappas)
+# anova(lm_sd_kappa1, lm_sd_kappa2)
+# # F-test indicates that adding a second-order term does improve fit
+
+pred_kappas_sumstats <- rbind(
+    sum_kappas %>%
+      cbind(., predict.lm(lm_mean_kappa1, newdata = ., interval = "conf")) %>% 
+      mutate(stat = "Average~Fleiss~kappa")
+    , sum_kappas %>%
+      cbind(., predict.lm(lm_sd_kappa2, newdata = ., interval = "conf")) %>% 
+      mutate(stat = "SD(Fleiss~kappa)")
+  )
+  
+pred_kappas_sumstats %>%
+  ggplot(data = ., aes(x = s, y = fit)) +
+  geom_point() +
+  geom_linerange(aes(ymin = lwr, ymax = upr)) +
+  facet_grid(
+    rows = vars(stat)
+    , labeller = label_parsed
+    , scales = "free"
+    , switch = "y"
+  ) +
+  geom_point(
+    data = subset(pred_kappas_sumstats, stat == "Average~Fleiss~kappa")
+    , mapping = aes(x = s, y = mean)
+    , shape = 1, color = "red"
+  ) + 
+  geom_point(
+    data = subset(pred_kappas_sumstats, stat != "Average~Fleiss~kappa")
+    , mapping = aes(x = s, y = sd)
+    , shape = 1, color = "red"
+
+  ) +
+  theme_bw() +
+  labs(
+    title = expression(paste("Observed and predicted change in bootstraped estimates of Fleiss's", kappa))
+    , subtitle = "Black dots indicate predicted values, vertical lines 90% confidence intervals, red circles observed values."
+    , x = expression(n[i])
+    , y = ""
+    , caption = expression(paste(
+      "Estimates obtained by modeling average Fleiss ", 
+      kappa, " as first-order and ",
+      SD(Fleiss~kappa), " as a as second-order polynomial of ", n[i]))
+  )
+
+```
+
+Thus, collecting more than three judgments per item does not only allow to increase posterior classification uncertainty for most ('ordinary') items and to separate 'difficult' items,
+but it also allows to obtain higher reliability as measured by conventional ICR metrics.[^7]
+
+[^5]: The fit of model of mean $\kappa$ second-order polynomial was tested against that of the first-order model, and the H1 of improvement in model fit was rejected ( $F = $`r lm_mean_kappa_anova$F[2]`, `r lm_mean_kappa_anova$Df[2]` degree of freedom).
+
+[^6]: Model fit statistics adjusted-$R^2$ are `r summary(lm_mean_kappa1)$r.squared` and `r summary(lm_sd_kappa2)$r.squared` for models of the means of and uncertainty in $\kappa$ values, respectively.
+
+[^7]: Replicating this analysis using Krippendorff's $\alpha$ does not change substantive conclusions.
+
+```{r plot bs Kalphas, eval = FALSE}
+kalphas %>%
+  group_by(s) %>%
+  summarise(
+    mean = mean(kalpha)
+    , sd = sd(kalpha)
+    , q5 = quantile(kalpha, .05)
+    , q95 = quantile(kalpha, .95)
+  ) %>%
+  ggplot(aes(x = s, y = mean)) +
+  geom_violin(
+    data = kalphas
+    , mapping = aes(x = s, y = kalpha, group = s)
+    , color = NA
+    , fill = "grey"
+    , alpha= .75
+  ) +
+  geom_point() +
+  geom_linerange(aes(ymin = q5, ymax = q95)) +
+  theme_bw() +
+  labs(
+    title = expression(paste(
+      "Intercoder reliability as function of ", n[i]#,", the number of judgments aggregated per item."
+    ))
+    , subtitle = "Shaded areas summarize 1000 bootstrapped values, dots mean values, and vertical lines 90% confidence intervalls."
+    , x = expression(n[i])
+    , y = expression(paste("Krippendorff's ", alpha))
+  ) 
+
+sum_kalphas <- kalphas %>% 
+  group_by(s) %>% 
+  summarise(
+    mean = mean(kalpha)
+    , sd = sd(kalpha)
+  )
+
+lm_mean_kalpha1 <- lm(mean ~ poly(s, 1), sum_kalphas)
+lm_mean_kalpha2 <- lm(mean ~ poly(s, 2), sum_kalphas)
+anova(lm_mean_kalpha1, lm_mean_kalpha2)
+# F-test indicates that adding a second-order term does not improve fit
+
+lm_sd_kalpha1 <- lm(sd ~ poly(s, 1), sum_kalphas)
+lm_sd_kalpha2 <- lm(sd ~ poly(s, 2), sum_kalphas)
+anova(lm_sd_kalpha1, lm_sd_kalpha2)
+# F-test indicates that adding a second-order term does improve fit
+
+pred_kalphas_sumstats <- rbind(
+    sum_kalphas %>%
+      cbind(., predict.lm(lm_mean_kalpha1, newdata = ., interval = "conf")) %>% 
+      mutate(stat = "Average~Krippendorffs~alpha")
+    , sum_kalphas %>%
+      cbind(., predict.lm(lm_sd_kalpha2, newdata = ., interval = "conf")) %>% 
+      mutate(stat = "SD(Krippendorffs~alpha)")
+  )
+  
+pred_kalphas_sumstats %>%
+  ggplot(data = ., aes(x = s, y = fit)) +
+  geom_point() +
+  geom_linerange(aes(ymin = lwr, ymax = upr)) +
+  facet_grid(
+    rows = vars(stat)
+    , labeller = label_parsed
+    , scales = "free"
+    , switch = "y"
+  ) +
+  geom_point(
+    data = subset(pred_kalphas_sumstats, stat == "Average~Krippendorffs~alpha")
+    , mapping = aes(x = s, y = mean)
+    , shape = 1, color = "red"
+  ) + 
+  geom_point(
+    data = subset(pred_kalphas_sumstats, stat != "Average~Krippendorffs~alpha")
+    , mapping = aes(x = s, y = sd)
+    , shape = 1, color = "red"
+
+  ) +
+  theme_bw() +
+  labs(
+    x = expression(n[i])
+    , y = ""
+    , caption = expression(paste(
+      "Estimates obtained by modeling average Krippendorff's ", 
+      alpha, " as first-order and ",
+      SD(Krippendorfs~alpha), " as a as second-order polynomial of ", n[i]))
+  )
+
+```
+
+
+## Assessing classification accuracy 
+
+So far, we've learnt that increasing the number of judgments per item used to classify them increases both intercoder reliability and the precision of posterior class estimates.
+While these quantities provide different ways to assess measurement reliability in human judgment based classification, accuracy is the ultimate reliability metric.[^7]
+
+[^7]: Out of the scope of simulation studies computing accuracy is often not possible, however, as items' true classes are regularly only known for a small subset of items or for none at all.
+
+So below we'll analyize three gold-standard based reliability metrics: accuracy, the true-positive classification rate (TPR), and the true-negative classification rate (TNR).[^8]
+
+[^8]: The TPR is computed from instances as $\frac{\text{true-positives}}{\text{true-positives} + \text{false-negatives}}$; the TNR is computed as $\frac{\text{true-negatives}}{\text{true-negatives} + \text{false-positives}}$.
+
+```{r eval accuracy}
+
+cs_true_and_est <- tibble(item = 1:1000, parameter = sprintf("c[%s]", 1:1000)) %>% 
+  right_join(post_cs) %>% 
+  left_join(
+    sim_codings %>% 
+      select(item, true_class) %>% 
+      unique()
+  )
+
+accuracies <- cs_true_and_est %>% 
+  group_by(s, chain, iter) %>% 
+  summarise(
+    n_judgments = n_distinct(item)
+    , Accuracy = sum(est == true_class)/n_distinct(item)
+    , tp = sum(est == 1 & true_class == 1)
+    , fn = sum(est == 0 & true_class == 1)
+    , fp = sum(est == 1 & true_class == 0)
+    , tn = sum(est == 0 & true_class == 0)
+    , TPR = tp / (tp + fn)
+    , TNR = tn / (tn + fp) 
+    , FPR = fp / (tn + fp) 
+    , FNR = fn / (tp + fn)
+  ) 
+
+
+accuracies_tidy <- accuracies %>% 
+  gather(stat, value, -s, -chain, -iter) %>%
+  filter(stat %in% c("Accuracy", "TPR", "TNR")) 
+
+accuracies_tidy %>% 
+  group_by(s, stat) %>% 
+  summarize(
+    mean = mean(value)
+    , q5 = quantile(value, .05)
+    , q95 = quantile(value, .95)
+  ) %>%
+  ggplot(aes(group = s, x = s)) +
+  geom_violin(
+    data = accuracies_tidy
+    , aes(y = value)
+    , color = NA, fill = "grey", alpha = .75
+  ) + 
+  geom_point(aes(y = mean)) + 
+  geom_linerange(aes(ymin = q5, ymax = q95)) + 
+  facet_grid(cols = vars(stat)) + 
+  theme_bw() +
+  labs(
+    title = expression(paste("Classification quality as a function of ", n[i]))
+    , subtitle = "Shaded areas depict posterior densities, dots mean values, vertical lines 90% credibility intervalls."
+    , x = expression(n[i])
+    , y = ""
+  )
+  
+```
+We can clearly see that accuracy increases (sublinearily) as $n_i$ is increased from three to ten.
+Also, the variability in accuracy estimates across chains and iterations is drastically decreased as $n_i$ is increased.
+Thus, for higher values of $n_i$, we have reason to be confident both about classification accuracy and the precision of accuracy estimates.
+The same can be said about true-negative classification rates. 
+In fact, mean accuracy and TNR estimates move in almost exact tandem. 
+The comparatively larger uncertainty of TNR estimates is due to the lower number of items from which the TNR is computed (`r 1000-sum(sim_codings$true_class)/10` compared to total `r 1000` items).
+
+True-positive classification, in contrast, is initially very much worse compared to the true-negative classification. 
+This is an artifact of both the low simulated prevalence of positive instances and coders varying abilities to correctly classify positive instances (and conversely their likelihood to falsely classify a negative instance as positive).
+Observed positive judgments consist of true-positive and false-positive items.
+As prevalence is low and coders sensitivity and specificities are lower than one (inducing a positive probability of false-positive classifications), only relatively few judgements will be positive, and hence there is fewer data for the model to rely on when estimating the classe of positive items.
+
+
+What is already apparent from the above fiugure and only made more explicit in the below fiugure is the bias in model-based classifications.
+However, this extent of bias decreases as more and more judgments per item are used to fit models.
+
+```{r eval bias}
+accuracies %>% 
+  mutate(bias = FPR-FNR) %>%
+  group_by(s) %>% 
+  summarise(
+    mean = mean(bias)
+    , q5 = quantile(bias, .05)
+    , q95 = quantile(bias, .95)
+  ) %>% 
+  ggplot(aes(x = s)) + 
+  geom_violin(
+    data = accuracies %>% mutate(bias = FPR-FNR)
+    , aes(group = s, y = bias)
+    , color = NA, fill = "grey", alpha = .75
+  ) + 
+  geom_point(aes(y = mean)) +
+  geom_linerange(aes(ymin = q5, ymax = q95)) +
+  theme_bw() +
+  labs(
+    title = expression(paste("Change in bias as function of ", n[i]))
+    , x = expression(n[i])
+    , y = expression(FPR-FNR)
+  )
+```
+
+To create the above figure, I have first substracted the false-negative rate (FNR) from the false-positive rate (FPR), and then aggregated these rations for each value of $n_i$ across iterations and chains.
+Both values would be about equal in case of unbiased classification.
+In contrast, a negative difference suggest that false-negative classification is more frequent than false-positive classification.
+Put differently, the model performs better in correctly classifying negative items than it does in case of positive items.
+However, the extent of this negativity bias decreases as $n_i$ is increased.

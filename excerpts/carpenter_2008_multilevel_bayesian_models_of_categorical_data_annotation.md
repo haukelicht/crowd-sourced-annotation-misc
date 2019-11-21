@@ -1,0 +1,160 @@
+<!-- carpenter_2008_multilevel_bayesian_models_of_categorical_data_annotation.md -->
+- Carpenter (2008) "Multilevel Bayesian Models of Categorical Data Annotation"
+    - *introduction*
+        - refer to units of measurement as 'items' 
+        - problems in constructing a 'coding standard' (i.e., gold standard) 
+            (i) annotators make mistakes (bias or lack of sophistication, some documents are difficult)
+            (ii) inter-coder differences in interpretation of a coding scheme 
+        - aim at inferring the correct categories of items (the 'ground truth') from the set of raw annotations
+            - second-order goals: use model to estimate latent traits of both items and annotators, and evaluate the uncertainty associated with model-based classifications and the variance in item/annotator latent traits
+        - *classification*: the set of members of categories must be exhaustive and pairwise disjoint (p. 3)
+        - *coding standards*: "defines how items are to be categorized" (p. 3).
+            - establishes common knowledge among a group of annotators
+            - typically includes example instances and their corresponding categories
+            - includes written guidelines attempting to specify which items should be assigned to which categories
+        - *Bayesian inference* (pp. 4f.): 
+            (i) creating a complete probability model over all data and parameters of interest,
+                - $p(x|\theta)$, a likelihood function (probability of the data given model parameter $\theta$)
+                - $p(\theta)$, prior distributions for each parameter (prior likelihood of parameters absent data)
+            (ii) fitting the model to observed data, and
+            (iii) reasoning about either the fitted parameters or about new data taking into account the uncertainty in the fitted parameters
+            - "still effective when data is missing" (p. 4, e.g., in incomplete panels, i.e., a setting in which not every annotator revisits every example/instance)
+    - *models* (pp. 5-16)
+        - general setup:
+            - $I$ items $1,...,I$
+            - $J$ annotators $1,...,J$
+            - $K$ annotations $1,...,K$
+            - the 'true' category prevalence is $\pi$
+            - the (unobserved) 'true' category of item $i$ is denoted as $c_i$
+            - annotator $j$'s (observed) categorization of item $i$ is $x_k$
+            - annotator specificities and sensitivities are captured by parameter $ heta_0$ and $\theta_1$, respectively
+        - introduces *four models* of annotation
+            - binomial model: assumes that sensitivity and specificity does not vary across annotators or items (i.e., constant ability and difficulty)
+            - beta-binomial model by annotator: assumes annotator-specific sensitivities and specificities, resp, but constant item difficulty
+            - beta-binomial model by annotator: assumes item-specific difficulties but common annotator ability parameters
+            - non-nested multilevel generalized model (random effects model): assumes annotator-specific sensitivities and specificities *and* item-specific difficulties
+        - generally, 
+            - all models provide an estimate of the posterior distribution of item categories $c$
+                - can be used to compute posterior statistics (e.g. prevalence, and annotator sensitivity and specificity)
+            - priors will move posteriors away from the ML solution
+                - "estimates should be a better predictor of future specificity and sensitivity" (p. 10)
+        - *binomial model* (BIM) (pp. 5-10)
+            - uniform priors on $\pi$, $\theta_0$ and $\theta_1$
+            - $c_i$ is Bernoulli distributed with parameter $\pi$
+            - $x_{ik}$ is Bernoulli-distributed with parameter $\theta_1$ if $x_k = 1$, and $(1 - \theta_0)$ if $x_k = 0$
+            - given $c_i$, the true category of an item, the distribution of true positives (true negatives) follows a binomial distribution with success parameter $\theta_1$ ($\theta_0$)
+                - #(true items):= $T = \sum_k c_k$
+                - #(false items):= $F = \sum_k (1 - c_k)$
+                - #(true positives):= $TP = \sum_k c_k x_k$ hence $TP \sim \mbox{Binomial}(\theta_1,T)$
+                - #(true negatives):= $TN = \sum_k (1-c_k) (1-x_k)$ hence $TN \sim \mbox{Binomial}(\theta_0,F)$
+        - problem of identifiability (pp. 7f.):
+            - the model has a symmetric bimodal likelihood space (i.e., for every possible parameter assignment there exists a parameter assignment that exactly mirrors the assignment along the origin [has opposite signs])
+            - can be solved by (i) strongly asymmetric priors, (ii) requiring that $\theta_l > .5 \forall l \in \{0,1\}$, or (iii) using a transform of the output of the Gibbs sampler
+            - also mitigated by choosing "reasonable initial values" (p. 8)
+        - *beta-binomial by annotator model* (BBIAM) (pp. 10-13)
+            - annotations $x_k$ are now determined by an item's true category $c_i$ *and* annotator-specific specificities and sensitivities (varying at annotator level, aggregated at item level)
+            - annotator-specific specificities and sensitivities: $\theta_{0,j}$ ($\theta_{1,j}$) modeled as beta-distributed with parameters $\alpha_0$ and $\beta_0$ ($\alpha_1$ and $\beta_1$)
+                - distributions of specs/sens are part of the model, too, so priors are specified as $\mbox{Beta}(\alpha, \beta)$ with mean $\alpha /(\alpha + \beta)$ and scale $\alpha + \beta$
+                    - uniform prior on mean expresses as $\mbox{Beta}(1, 1)$
+                    - uniform prior on inverse square scale $1/(\alpha + \beta)^2$  expresses as $\mbox{Pareto}(1.5)$ with $\mbox{Pareto}(x |\theta) \propto x^{-(\theta +1)}
+            - estimates of $\theta_{0,j}$ ($\theta_{1,j}$) are biased towards the mean of the prior
+            - per-annotator true positives (negatives) are distributed beta-binomial:
+                - $TP_j \sim \mbox{Beta-Binomial}(\alpha_1,\beta_1,T_j)$, where $T_j = \sum_k \mbox{I}(\mbox{annotator}(x_k)=j) c_i x_k$
+                - $TN_j \sim \mbox{Beta-Binomial}(\alpha_0,\beta_0,F_j)$, where $F_j = \sum_k \mbox{I}(\mbox{annotator}(x_k)=j) (1-c_i) (1-x_k)$
+        - *beta-binomial by item model* (BBIIM) (pp. 13f.)
+            - annotations $x_k$ are now determined by an item's true category $c_i$ *and* item-specific difficulty (varying and aggregated at item level): true prevalence $\pi$ determines $c_i$, determines item difficulty $\theta_i$, determines annotations $x_{i,k}$ (see Figure 3, p. 13) 
+            - item-specific difficulty: $\theta_i$ modeled as beta-distributed with mean $c_i\alpha_0 + (1-c_i)\alpha_1$ (common specificity if true category is 1, sensitivity if true category is 0) and scale $c_i\beta_0 + (1-c_i)\beta_1$
+        - *logistic random effects model* (LREM) (pp. 14-)
+            - incorporates both annotator- and item-specific effects on annotation:
+                - annotators contribute annotations at the item-annotation level with annotator-specific sensitivities and specificities
+                - true prevalence determines true category, determines both difficulty and annotation at the item-level, difficulty also determines annotation at the item-level
+            - annotator-specific specificities and sensitivities: modeled as normal-distributed random effects $\gamma_{0,j}$ ($\gamma_{1,j}$) with mean $\mu_0$ ($\mu_1$) and variance $\sigma_0^2$ ($\sigma_1^2$)
+                - "provide a form of multilevel pooling among the annotators" (p. 16)
+                    - joint priors induce regularization and prevent from overfitting for low-count annotators (i.e., annotators who have labeled only relatively few items) 
+                - models 
+                    (i) how well a randomly sampled new annotator is expected to behave on average, and 
+                    (ii) how much variation there is expected to be among annotator abilities
+            - item-specific difficulty: modeled as normal-distributed random effects $\delta_i$ with mean 0 and variance $c_i\rho_1^2 + (1-c_i)\rho_0^2$
+                - $rho_0$ and $rho_1$ are assigned uniform priors on the interval $[0,50]$
+                - more informative priors will be important when there are relatively few annotators per item
+            - deploys a generalized linear model with a logit link function
+                - the $\mbox{logit}(p) = \log(\frac{p}{1-p})$ maps $p \in [0,1]$ onto a continuous scale
+                - the inverse of the logit is the logistic $\mbox{logit}^{-1}(x) = \frac{1}{1+\exp(-x)}$, which maps a continuous value $x$ (the log odds) onto the interval $(0,1)$ (a probability)
+            - the model must me made identifiable, e.g., by forcing the difficulty parameters to sum to zero (i.e., centering them) 
+    - *synthetic data*: experimental validation of the models (pp. 16-28)
+        - implements all models in the BUGS statistical programing language (uses the Gibbs sampler)
+        - author simulates data with corresponding data-generation processes to evaluate how well the models fare to recover set parameter values
+        - results:
+            - posterior parameter estimates are reasonable (i.e., they cover the simulated values the expected number of times) for all models
+            - posterior intervals are tighter for the annotator-level parameters than the item-level parameters (as expected, given that there is more annotator-level data points)
+                - also, there are roughly four times as much data points to estimate $\theta_0$ than to estimate $theta_1$ given a 'true' prevalence of $.2$
+            - group-level priors for annotators were less precisely fit under reasonable data quantities than the priors for items
+                - many more items than annotators (1000 vs. 20)
+                - however, as the $\theta_i$ values are drawn per item in the BBIIM, and there are only an expected 10 annotators per item, a beta prior with a scale of much greater than 10 will dominate the actual data
+                    - results in low variance in the estimated $\theta_i$ parameters
+            - error rates:
+                - BIM: 23 of 1000 would be assigned the wrong category (would be lower if there were more annotators, and/or more accurate annotators)
+                - BBIAM: 25 of 1000 would be assigned the wrong category
+                - BBIIM: 38 of 1000 would be assigned the wrong category
+                - LREM: 37 of 1000 would be assigned the wrong category, and the error curve is skewed with many true 1s having estimates near 0 (cf. Figure 20, p. 27) 
+    - *RTE-1 Data* (pp. 35-)
+        - the RTE-1 data is a canonical text-annotation dataset in which human-workers were tasked with recognizing textual entailment ("a directional relationship between a pair of texts ... if the meaning of [a hypothesis] can be inferred from the meaning of [an entailing text]")
+        - the data: 
+            - 1000 text pairs with balanced prevalence
+            - two human coders per text pair in the original data (inter-annotator agreement was 80%)
+            - ten annotators per text on the crowd-sourced data 
+        - results of fitting the BBIAM:
+            - strong pull of prior on annotator accuracy parameters $\theta_{0,j}$ and $\theta_{1,j}$
+            - large posterior intervals, particularly for the many annotators who categorized relatively few items
+            - estimated prevalence tightly fit around 'true' (gold-standard based) prevalence of .5 (400 positive and negative instances each)
+            - plot of residuals versus gold standard (Figure 31, p. 38) illustrates that annotators vary not only wrt to the number of items they categorized, but also wrt to their biases towards sensitivity and specificity, and their accuracies
+                - many annotators (and many with many annotations) performed close to chance (i.e., accuracies close to .5)
+                - discarding annotations of these very noisy annotators in fact improves the model's fit and predictive qualities, and yields larger estimates of average annotator sensitivity and specificity ("Removing noisy annotators substantially reduces the estimates of variability and increases the estimates of accuracy, especially for sensitivity.", p. 39) 
+                - author suggests that a sophisticated 'pruning strategy' (i.e., a strategy to discard annotations of very noisy annotators) could be based on a $\kappa$ statistic (i.e., chance adjusted inter-rater agreement, pp. 38f.)
+            - "aggregating over a large number of unreliable annotators, we can achieve a gold standard at least as well annotated as one annotated by two or three experts" (p. 39)
+            - model-based estimation o an instance's category yields substantially sharper posterior intervals than simple majority vote (pp. 39-41)
+            - the rationale for a hierarchical model lies not in its fit, but in its higher potential to generalize to held-out data (p. 41)
+                - "the hierarchical model exerts a degree of smoothing that results in a slightly less tight fit to the training data, but hopefully a better estimate of underlying ability and thus more generalizability to future data because of less overfitting to the training data"
+        - results of fitting the LREM:
+            - estimates and posterior distributions of annotator-specific parameters closely match those of the BBIAM
+            - wide uniform prior exerts a strong pull on item-specific difficulty parameters (centered on 0)
+        - author also uses the model estimates to revisit the gold standard (pp. 42f.)
+            - in particular, he investigates (i) the 109 items with posterior category means in the interval (.01, .99), and (ii) the 18 items in the remaining set that do not match the gold-standard category
+            - emphasizes that the model-based evaluation of annotation can generally serve as a means to evaluate human-generated (e.g., expert) gold standards (see also Section 7, p. 44)
+    - *corpus adjudication, coding standard development, and annotator evaluation* (p. 44)
+        - the author also stresses that models of annotation can play an important role in corpus and gold-standard development (p. 44)
+        - propose an adaptive coding framework in which each item is annotated by only few crowd-workers and then annotations are increased iteratively for items with high levels of model-based uncertainty (and hence room for improvement)
+            - [hli:] this idea is fleshed out more thoroughly by Sheng et al. (2008) and Ipeirotis et al. (2014)
+        - stress that uncertainty may prevail and by an important signal of ambiguity in instances or the coding scheme: "we believe a model should not be too confident about such uncertain examples" (p. 44)
+    - *probabilistic supervision and evaluation* (pp. 44f.)
+        - authors stress that the model output can be used to train classification models
+        - suggest to sample over complete category assignments to all items
+        - argue that training a model on data sampled from the posterior distributions of categories will not only help learning to classify instances, but also facilitate to learn the genuine ambiguity prevailing in some items
+    - *previous work* (pp. 45-48)
+        - Dawid and Skene (1979) 
+            - introduced a multinomial classification model with annotator's response varying by category
+            - attempt to find maximum likelihood point estimates using expectation maximization
+        - Lord (1980)/Rasch (1980) 
+            - develop the item-response model for educational testing applications (almost always estimated with a known gold standard)
+        - Dillon and Mulani (1984) 
+            - introduce a latent class multinomial categorical model to asses inter-annotator agreement
+            - examine both models with common and random annotator error
+            - provide maximum likelihood estimates using EM
+        - Joseph, Gyorkos and Coupal (1995)
+            -  introduce a binomial model for sensitivity and specificity with independent beta priors
+        - Uebersax and Grove (1993)
+            - apply a variant of the item-response model to the problem of agreement analysis in an ordinal response setting when the gold standard is not known
+            - introduce a latent trait for annotator bias, acting much like the ability parameter in the item-response model (here, bias is a weaker measure of the difference between sensitivity and specificity which assumes the two are related through bias)
+        - Qu, Tan and Kutner (1996) 
+            - apply a generalized linear model with a probit link function to obtain a point estimate with expectation maximization (EM)
+            - have parameters for annotator sensitivity and specificity as well as item difficulty, with an additional discriminative parameter for the diagnostic tests (i.e., items)
+        - Dendukuri and Joseph (2001) 
+            - apply Bayesian inference to Qu, Tan and Kutner's model,
+            - fix priors by interviewing human experts
+        - Albert and Dodd (2004) 
+            - evaluate the bias induced in prevalence, sensitivity and specificity estimates by choosing the wrong model
+            - fit a binomial mixture model with easy/regular cases, a beta-binomial model which shows item effects but treats annotators homogeneously, as well as Qu, Tan and Kutner's logistic model with item effects and annotator discriminativeness parameters
+        - Basu, Banerjee and Sen (2000) 
+            - develop a Bayesian estimate of the kappa statistic
+        - Smyth (1995) 
+            - discusses probabilistic supervision under exactly the same kind of situation as we are discussing and shows it can work well for simulated data.

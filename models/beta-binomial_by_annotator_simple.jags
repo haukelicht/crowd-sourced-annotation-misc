@@ -1,0 +1,52 @@
+# --------------------------------------------------------------------------- #
+# ---- JAGS model of Carpenter's (2008) beta-binomial by annotator model ---- #
+# --------------------------------------------------------------------------- #
+#
+#  - N denotes the number of items/instances, indexed by i
+#  - M denotes the number of annotators, indexed by j
+# 
+# Comments:
+#  - Data input:
+#    - y a vector of annotator-generated judgments, so that y[i,j] \in \{0,1\} denotes annotator i's judgment of item j 
+# 
+#  - Parameters:
+#    - c[i] is item i's 'true' class \in \{0,1\}
+#    - pi is the 'true' prevalence of the positive class
+#    - theta0[j] is annotator j's true-negative classification rate \in [0,1]
+#    - theta1[j] is annotator j's true-positive classification rate \in [0,1]
+#  - Meta-parameter:
+#    - alpha0 determines the location of the prior density of coders' true-negative classification rates
+#    - beta0 determines the shape of the prior density of coders' true-negative classification rates
+#    - alpha1 determines the location of the prior density of coders' true-positive classification rates
+#    - beta1 determines the shape of the prior density of coders' true-positive classification rates
+#
+model{
+    # loop over items
+    for (i in 1:N){
+        c[i] ~ dbern(pi)
+    }
+
+    # loop over annotators:
+    # NOTE: for each annotator j, a specificity theta0[j] and a sensitivity 
+    #   theta1[j] are sampled from beta priors with parameters (alpha0, beta0) 
+    #   and (alpha1, beta1) respectively (see below)
+    for (j in 1:M) {
+        theta0[j]~ dbeta(alpha0, beta0);
+        theta1[j]~ dbeta(alpha1, beta1);
+    }
+
+    # loop over judgments
+    for (j in 1:J) {
+        y[j,3] ~ dbern(c[y[j,1]]*theta1[y[j,2]]+(1-c[y[j,1]])*(1-theta0[y[j,2]]))
+    }
+
+    # flat prioir on 'true' prevalence
+    pi ~ dbeta(1, 1);
+    
+    
+    alpha0 <- 1;
+    beta0 <- 1;
+
+    alpha1 <- 1;
+    beta1 <- 1;
+}

@@ -1,0 +1,1647 @@
+---
+title: Fitting annotation models to crowd-sourced measurements of populism in textual data
+author: "Hauke Licht"
+date: "2019-03-11"
+output: html_document
+bibliography: /Users/licht/switchdrive/Documents/work/phd/phd_research.bib
+---
+
+```{r knitr, include = FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE
+  , message = FALSE
+  , warning = FALSE
+  , fig.align = 'center'
+  , fig.height = 4
+  , fig.width = 8
+  , out.extra='style="padding:10px; display: inline-block;"'
+)
+
+options(digits = 3)
+```
+
+## Goal of this analysis and research design
+
+In this analysis I fit annotation models to data collected to validate a measurement instrument of populism in textual data proposed by @hua_networked_2008.
+Specifically, I obtain the estimates of the Bayesian beta-binomial by annotator (BBA) model proposed by @carpenter_multilevel_2008 using MCMC methods.
+In a binary classification context, the BBA model estimates positive instances prevalence, coder-specific abilities as sensitivity and specificity parameters, as well as items' class membership (see below for a detailed discussion).
+
+The goal of this exercise is to assess the following questions for each dimensions of the measurement instrument (see below for a detailed discussion):
+
+1. What is the average posterior classification uncertainty when aggregating coders' judgments at the item-leve?
+2. What is the variation in posterior classification uncertainty?
+3. What is the (posterior) distribution of coders' abilities?
+
+These questions are asked with an eye on the overarching goal to further improve and validate the measurement instrument proposed by Hua et al.
+
+Specifically, I want to be able to implement coding experiments that allow me to answer the following questions (among others):
+
+1. *How does the measurement quality achieved by aggregating crowd-sourced codings change as the the number of codings aggregated per document is increased?*
+2. *What is the average number of codings per document required to achieve a predetermined level of measurement quality?*
+3. *How does the number of codings required per document to achieve a predetermined level of measurement quality vary across documents?*
+4. *Are model-based document-level labels biased relative to gold standard labels?*
+5. *Is the bias in model-based document-level labeling decreasing with the number of codings aggregated per document?*
+6. *How strong is the agreement between majority-winner with model-based labels?*
+7. *What is the agreement (i) between majority-winner labels and the gold standard, and (ii) between model-based labels and the gold standard?*
+8. *How does agreement among methods and their agreement with the gold standard, respectively, change as the number of codings aggregated per document is increased?*
+
+The quantitity of interest are thus the change in measurement quality metrics as the number of judgments aggregated per item, $n_i$, is increased in integer steps.
+Measurement quality can be operationalized in three distinct ways:
+
+1. *classification uncertainty*, the corpus-level mean of and variation in the item-level standard deviation (across chains and iterations) of posterior classifications;
+2. *accuracy*, the corpus-level aggregate of model-based posterior classifications' agreement with external gold standard labels at the item level;
+3. *bias*, the corpus-level ratio of false-positive to false-negative posterior classification reltative to external gold standard labels; and
+4. *intercoder reliability*, the intercoder agreement as measured by Krippendorff's $\alpha$ or Fleiss's $\kappa$.
+
+Generally, we hypothesis the following changes as $n_i$ is increased:
+
+1. classification uncertainty decreases,
+2. accuracy increases,
+2. bias decreases, and
+3. intercoder reliability increased.
+
+To be able to scrutinize these hypotheses, it is imperative to first conduct sample size calculations.
+Sample size analysis are conducted to eventually allow the assertain that implemented experiments have enough statistical power to detect substantially relevant differences in statistics, and generally require the following information: (i) estimates of the mean and variance of the metric in the population, (ii) desired Type-I and II error probabilities, (iii) the difference sought to be detected.
+
+However, except item (ii), this information is not available: We neither know the averages and the variability of the quality metrics (item i), nor due we know a priori what magnitudes of change we canexpect as $n_i$ is increased (item iii).
+
+In order to obtain reasonable bounds on these quantities, I thus pursue a two-pronged strategy:
+
+1. I will use the validation datasets collected by Hua et al. to obtain posterior estimates of the average and variance of these metrics in a setting where no item was judged by more than four coders, i.e., $n_i = 1,\ \ldots,\ 4$.
+2. I will use this posterior knowledge to parameterize a simulation study designed to assess the change in quality metrics as a function of $n_i$.
+
+Implementing these two steps will then allow me to answer what magnitudes of change in quality metrics can be expected as $n_i$ is increased, say from three to four, as well as the average values and variability of these metrics for each value of $n_i$.
+These estimates can then be used to compute the sample sizes required to detect differences that are about the size of the changes observed in the simulation study.
+
+## The original measurement instrument
+
+Hua et al. recruited crowd workers on the crowd-sourcing platform *CrowdFlower* to code social media posts created by a selected number of accounts of Wesrtern European parties and their leaders according to the following coding scheme:
+
+1.	filter questions:
+  1.	This post has no text or its content is impossible to understand (if applies, skip to next social media post)
+  2.	I understand the message of this social media post (if applies, proceed with answering questions 2-4)
+2.	*anti-elitism*: Does this tweet/post criticize or mention in a negative way the elites? (No/Yes)
+3.	*people-centrism*: Does this tweet/post mention in a positive way or even praise the people (citizens of the country, the working class, the native ...) or the nation? (No/Yes)
+4.	*exclusionism*: Does this tweet/post criticize minorities or specific groups of people (muslims, jews, LGBT people, poor people ...)? (No/Yes)
+
+
+## Fitting BBA models to crowd-sourced measurements
+
+First, some general setup:
+```{r setup, echo = TRUE}
+
+# set the file path
+file_path <- file.path("~", "switchdrive", "Documents", "work", "phd", "methods", "crowd-sourced_annotation")
+
+# load required namespaces
+
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(rjags)
+library(ggplot2)
+library(ggridges)
+library(icr)
+
+# set seed
+set.seed(1234)
+
+# load internal helpers
+
+helpers <- c(
+  "get_mcmc_estimates.R"
+  , "get_codings_data.R"
+  , "transform_betabin_fit_posthoc.R"
+)
+
+{sapply(file.path(file_path, "code", "R", helpers), source); NULL}
+```
+
+### The data
+
+Next, we load and inspect the original validation datasets.
+
+```{r inspect orig validation data}
+# load data
+dat <- data.table::fread(file.path(file_path, "exdata", "f1248095.csv"), stringsAsFactors = FALSE)
+
+dat %>% 
+  group_by(`_unit_id`) %>% 
+  summarise(
+    n_judgments = n()
+    , n_coders = n_distinct(`_worker_id`)
+  ) %>% 
+  group_by(n_judgments, n_coders) %>% 
+  summarize(n = n()) %>% 
+  knitr::kable(
+    col.names = c("No. Judgments", "No. Coders", "$N$")
+  )
+```
+
+To obtain their validation data, Hua et al. crowd-sourced judgments from `r length(unique(dat[, "_worker_id"]))` different coders for a set of `r length(unique(dat[, "_unit_id"]))` different social media posts (items).
+Each item was coded between 1 and four times.
+For each item that was coded multiple times, no coder provided more than one judgment (i.e., no repeated coding). 
+
+The data was collected on the crowd-sourcing platform *CrowdFlower* and comes with a set of filter and meta variables that need to be taken into account when constructing the datasets used to obtain posterior class estimates.
+The variable `filter`, for instance has the following realizations in our data:
+```{r inspect CF filters}
+dat %>% 
+  group_by(filter) %>% 
+  summarise(n = n_distinct(`_unit_id`)) %>% 
+  arrange(desc(n)) %>% 
+  mutate(filter = stringi::stri_escape_unicode(filter)) %>% 
+  knitr::kable(
+    col.names = c("Filter type", "$N$")
+    , caption = "Number of judgments in validation data by filter type" 
+  )
+```
+Of all `r nrow(dat)` judgments, we want to retain only those that have the type 'ok'.
+The following code just implements this:
+
+```{r crt codings data, echo = TRUE}
+codings <- dat %>% 
+  # keep only judgements that are 'ok'
+  filter("ok" == filter) %>%
+  # replace "" with NA in string vectors
+  mutate_if(is.character, Vectorize(function(x) if (x == "") NA_character_ else x)) %>%
+  mutate(
+    # judgement index
+    index = row_number(),
+    # item index
+    item = group_indices(., `_unit_id`) ,
+    # coder index
+    coder = group_indices(., `_worker_id`),
+    # populism indiactors
+    elites = elites == "yes",
+    exclusionary = exclusionary == "yes",
+    people = people == "yes",
+    populist = people & elites,
+    right_populist = people & elites & exclusionary
+  ) %>% 
+  tbl_df()
+
+n_judgments <- nrow(codings)
+n_coders <- length(unique(codings$coder))
+n_items <- length(unique(codings$item))
+```
+This leaves us with `r n_items` items judged by between one and four coders.
+Specifically, having filtered-out non-ok judgments, we retain the following number of items that were coded between one and four times.
+
+```{r tab codings}
+codings %>% 
+  group_by(item) %>% 
+  summarise(n_judgments = n_distinct(coder)) %>% 
+  group_by(n_judgments) %>% 
+  summarise(n = n()) %>% 
+  knitr::kable(
+    col.names = c("No. judgments/coders", "$N$")
+    , caption = "Number of judgments in filtered validation codings data" 
+  )
+  
+```
+
+
+### Model specification
+
+We estimate beta-binomial by annotator models to judgments for each dimension separately.
+
+All models share the same parametrization:
+
+$$
+\begin{align*}
+c_i &\sim\ \mbox{Bernoulli}(\pi)\\
+\theta_{0j} &\sim\ \mbox{Beta}(\alpha_0 , \beta_0)\\
+\theta_{1j} &\sim\ \mbox{Beta}(\alpha_1 , \beta_1)\\
+y_{ij} &\sim\ \mbox{Bernoulli}(c_i\theta_{1j} + (1 - c_i)(1  - \theta_{0j}))\\
+{}&{}\\
+\pi &\sim\ \mbox{Beta}(1,1)\\
+\alpha_0/(\alpha_0 + \beta_0) &\sim\ \mbox{Beta}(1,1)\\  
+\alpha_0+\beta_0 &\sim\ \mbox{Pareto}(1.5)\\
+\alpha_1/(\alpha_1 + \beta_1) &\sim\ \mbox{Beta}(1,1)\\ 
+\alpha_1+\beta_1  &\sim\ \mbox{Pareto}(1.5)
+\end{align*}
+$$
+where 
+
+- $c_i$ is the 'true' (unobserved) class of item $i$,
+- $\pi$ is the 'true' prevalence of the positive class,
+- $\theta_{0j}$ is coder $j$'s specificity (true-negative rate),
+- $\theta_{1j}$ is her sensitivity (true-positive rate), and 
+- $\alpha_\cdot, \beta_\cdot$ are the parameters of the Beta-distributions from which coders' specificities and sensitivities are drawn from (hyperpriors are parameterized in terms of their mean and scales).
+
+All priors are choosen to be uninformative, as we have no prior knowledge in about coders' abilities or prevalence in this particular domain.
+
+Befor proceeding to estiamting people-centrism in posts, some general JAGS setup.
+```{r setup JAGS, echo = TRUE}
+# load DIC modeul
+load.module("dic")
+
+# global model parameters
+n_chains <- 3
+model_file_path <- file.path(file_path, "models", "beta-binomial_by_annotator.jags")
+fit_file_path <- file.path(file_path, "fits", "betabinom_by_annotator_populism.RData")
+```
+
+### People-centrism
+
+We begin with the first dimension of the measurment instrument: *people-centrism*.
+In this context, the positive class unites posts that feature people-centrist statements.
+From studies in other domains (news articles, speeches), we expect the prevalence to not exceed 40%. 
+With regard to coders abilities, we expect most coders to be non-adversarial (i.e., their judgments are not negatively correlated with item classes), as crowd workers were allowed to participate only if they successfuly compelted eight out of ten initial gold screening tasks.
+As these beliefs are however not supported by domain-specific data, I decided to go with uninformative priors.
+
+#### Estimation
+
+I obtain MCMC estimates using JAGS with three chains, 5K burn-in iterations, and 40K iterations with thinning parameter set to 20. 
+These choices are based on inspecting convergence and autocorrelation in initial models with fewer iterations and less (or no) thinning.
+
+```{r fit people-centrism, eval = FALSE, echo = TRUE}
+
+# subset codings
+people_codings <- codings %>%
+  mutate(judgment = as.integer(people)) %>% 
+  filter(!is.na(judgment)) %>% 
+  select(index, item, coder, judgment) 
+
+# contruct model-compatible MCMC data object
+people_mcmc_data <- get_codings_data(people_codings)
+
+# initialization values
+init_vals <- lapply(1:n_chains, function(chain) {
+  
+  out <- list()
+  out[["pi"]] <- .2 + rnorm(1, 0, .05)
+  out[[".RNG.name"]] <- "base::Wichmann-Hill"
+  out[[".RNG.seed"]] <- 1234
+  
+  return(out)
+})
+
+# initilaize model
+people_mcmc_model <- jags.model(
+  file = model_file_path
+  , data = people_mcmc_data
+  , inits = init_vals
+  , n.chains = n_chains
+)
+
+# update: 1K burnins
+update(people_mcmc_model, 1000)
+
+# fit model
+people_mcmc_fit <- coda.samples(
+  people_mcmc_model
+  , variable.names = c(
+    "deviance"
+    , "pi"
+    , "c"
+    , "theta0", "theta1"
+    , "alpha0", "beta0"
+    , "alpha1", "beta1"
+  )
+  , n.iter = 40000
+  , thin = 20
+)
+
+fits <- list()
+fits$people_mcmc_fit <- people_mcmc_fit
+```
+
+```{r load people-centrism fit, include = FALSE}
+
+people_codings <- codings %>%
+  mutate(judgment = as.integer(people)) %>% 
+  filter(!is.na(judgment)) %>% 
+  select(index, item, coder, judgment) 
+
+fits <- readRDS(fit_file_path)
+
+people_mcmc_fit <- fits$people_mcmc_fit
+```
+
+First, we want to ensure that the model converged and chains are well-mixed.
+To do so, we inspect convergence of the deviance information criterion:
+
+```{r inspect dic people_mcmc_fit}
+plot(people_mcmc_fit[, "deviance"])
+gelman.plot(people_mcmc_fit[, "deviance"])
+autocorr.plot(people_mcmc_fit[, "deviance"])
+```
+
+Convergence is achieved very quickly:
+the shrinkage factor is close to one already after iterations.
+Keeping only every 20th estimate helps to reduce autocorrelation substantially.
+
+#### Posterior prevalence of people-centrism
+
+Turning to the posterior density of $\pi$, the prevalence of people-centrism in social media posts, 
+it becomes immediately apparent that all three chains have converged on the reverse assignment (the cross-chain mean posterior estimate of $\pi$ is `r mean(unlist(people_mcmc_fit[, "pi"]))`), a problem resulting from the non-identifiability of the measurement model [@carpenter_multilevel_2008, p. 7].
+Hence, I use post-hoc transformation to obtain the correct assignment.[^4]
+
+[^4]: All chains converge on the 'reversed' parameter assignment of $\mathcal{P} = \left(\{c_i\}_{i\in 1, \ldots, n}, \pi, \{\theta_{j0}\}_{j\in\,1, \ldots, m}, \{\theta_{j1}\}_{j\in\,1, \ldots, m}, \alpha_0, \beta_0, \alpha_1, \beta_1 \right)$: 
+$\mathcal{P}' = \left( \{1-c_i\}_{i\in 1, \ldots, n}, 1-\pi,  \{1-\theta_{j1}\}_{j\in\,1, \ldots, m},  \{1-\theta_{j0}\}_{j\in\,1, \ldots, m} \beta_1, \alpha_1, \beta_0, \alpha_0 \right)$ In the reversed assignment $\mathcal{P}'$, $c_i' = 1- c_i$,  the prevalence is reflected around 0.5, and the sensitiv-
+ity and specicity parameters are swapped and reflected around 0.5 [@carpenter_multilevel_2008, pp. 7f.].
+
+```{r trans people_mcmc_fit}
+people_mcmc_fit_t <- transform_betabin_fit_posthoc(people_mcmc_fit)
+```
+
+```{r inspect pi people-centrism}
+people_post_pi <- get_mcmc_estimates(people_mcmc_fit_t, "pi")
+
+ggplot(people_post_pi, aes(x = est)) + 
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  theme_bw() +
+  labs( 
+    title = "Posterior density of prevalence of people-centrism in validation texts"
+    , subtitle = "Estimates obtained from three MCMC of 40K iterations each, retaining only every 20th estimate"
+    , x = expression(pi)
+    , y = "Density"
+  )
+```
+
+The posterior density of $\pi$ is unimodal and, after post-hoc transformation, has its mean value `r mean(people_post_pi$est)`.
+Importantly, with a total `r n_judgments` valid codings provided for `r n_items`, the prevalence posterior density exhibits relatively little dispersion given that we have given the prevalence an uninformative (flat) Beta(1,1) prior density:
+90% os posterior values are in the range `r quantile(people_post_pi$est, c(.05, .95))`.
+
+#### Posterior classification uncertainty
+
+Turning to posterior classification uncertainties, we see that with only a few judgments per item, there is much variability in classification uncertainty when aggregating classifications across chains and iterations at the item level:[^5]
+
+[^5]: Here, posterior classification uncertainty at the item-level is measured as the standard deviation of posterior classifications across chains and interations.
+
+```{r inspect c people-centrism}
+people_post_cs <- get_mcmc_estimates(people_mcmc_fit_t, "c\\[\\d+\\]")
+
+people_post_cs_sd <- people_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(sd = sd(est)) %>% 
+  ungroup() %>% 
+  mutate(item = as.integer(sub(".+\\[(\\d+)\\]", "\\1", parameter)))
+
+ggplot(people_post_cs_sd, aes(x = sd)) +
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  theme_bw() +
+  labs( 
+    title = "Posterior classification uncertainty of people-centrism in validation texts"
+    , subtitle = "Estimates obtained from three MCMC of 40K iterations each, retaining only every 20th estimate"
+    , x = expression(SD(c[i]))
+    , y = "Density"
+  )
+```
+
+While the majority of items is assigned with little posterior classification uncertainty, 
+there are items with both moderate ($\text{SD}(c_i) \in [.25, .4)$) and high ($\text{SD}(c_i) \geq .4$) levels of posterior classification uncertainty.[^6]
+
+[^6]: In binary classification, the theoretical maximum value of posterior classification uncertainty is achieved when in 50% of iterations the item is assigned to the positive class, and else to the negative class.
+
+Hence, for people-centrism in the validation items, we get the following mean and standard devation values of posterior classification uncertainty:
+```{r stats c people-centrism}
+people_post_cs_stats <- people_post_cs_sd %>% 
+  summarise(avg_sd = mean(sd), sd_sd = sd(sd))
+
+knitr::kable(
+  people_post_cs_stats
+  , col.names = c("Average", "S.D.")
+  , caption = "Posterior classification uncertainty in people-centrism classification"
+)
+```
+The percentiles, in turn, have the following cutpoints
+```{r percentiles c people-centrism}
+people_post_cs_sd %>% 
+  mutate(Percentile = ntile(sd, 10)) %>% 
+  group_by(Percentile) %>% 
+  summarise(lwr = min(sd), upr = max(sd)) %>% 
+  mutate_at(2:3, round, 3) %>% 
+  mutate(Interval = paste0("[", lwr, ", ", upr, ifelse(Percentile == 10, "]", ")"))) %>% 
+  select(-lwr, -upr) %>% 
+  knitr::kable(caption = "Percentiles of item-level standard deviation in posterior assignment for people-centrism classification.")
+```
+
+However, note that we know from simulation studies validating the fit of the BBA model that with ten judgments per item gathered from coders with specificieties sampled from a Beta-distribution with mean $40/(40+8) = 0.8\bar{3}$ and scale $40+8 = 48$, and sensitivities sampled from a Beta with mean $20/(20+8) \approx 0.714$ and scale $20+8 = 28$, we obtain a substantial number of confidently misclassified items.
+Thus, high posterior classification certainty is not a perfect indicator of actual classification quality.
+Therefore, its interesting to also breakdown posterior classification uncertainty by posterior classification:
+
+```{r inspect c people-centrism by post classification }
+people_post_class <- people_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(
+    n_pos = sum(est)
+    , n_neg = sum(!est)
+    , tie_breaker = rbernoulli(1) 
+    , post_class = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) %>% 
+  mutate(item = as.integer(sub(".*\\[(\\d+)\\]$", "\\1", parameter)))
+
+left_join(
+  people_post_class %>% select(item, post_class)
+  , people_post_cs_sd %>% select(item, sd)
+) %>% 
+  ggplot(aes(x = sd, group = post_class)) +
+    geom_density(color = NA, fill = "grey", alpha = .75) +
+    facet_grid(~post_class) + 
+    theme_bw() +
+    labs( 
+      title = "Posterior classification uncertainty of people-centrism by posterior classification"
+      , subtitle = "Estimates obtained from three MCMC of 40K iterations each, retaining only every 20th estimate"
+      , x = expression(SD(c[i]))
+      , y = "Density"
+    )
+```
+
+We see that much of the posterior classification uncertainty is associated with items of which we have reason to believe that they are truely positive.
+If we would want to consolidate our believes about posterior classifications, we would need to collect more codings, particularly so for items we currently belief to be positive and that are associated with relatively high posterior classification uncertainty.
+
+Because we know from simulation studies that low posterior classification uncertainty can be an artifact of few numbers of judgments per item aggregated to estimate the posterior class, a most sensible resampling strategy is to group items according to posterior classes and posterior classification uncertainty percentiles, and to sample equal numbers of items from each group (without replacement).
+We thus sample 11 items from the following groups:[^1234]
+
+[^1234]: Eleven because the smalles strata is populated by only 11 items, and we want to sample equal numbers of items from each strata without replacement.
+```{r stratify post c sd people-centrism}
+people_post_strata <- left_join(
+  people_post_class %>% select(item, post_class)
+  , people_post_cs_sd %>% select(item, sd)
+) %>% 
+  group_by(post_class) %>% 
+  mutate(percentile = ntile(sd, 10)) %>% 
+  group_by(post_class, percentile)
+  
+people_post_strata %>% 
+  summarise(lwr = min(sd), upr = max(sd)) %>% 
+  mutate_at(vars(lwr, upr), round, 3) %>% 
+  mutate(interval = paste0("[", lwr, ", ", upr, ifelse(percentile == 10, "]", ")"))) %>% 
+  select(-lwr, -upr) %>% 
+  spread(post_class, interval) %>% 
+  knitr::kable(
+    col.names = c(
+      "Percentile"
+      , "Interval (post. class = 0)"
+      , "Interval (post. class = 1)"
+    )
+    , caption = "Percentiles of item-level standard deviation in posterior assignment for people-centrism classification by posterior class."
+  )
+
+strat_samples <- list(
+  people = people_post_strata %>% 
+    sample_n(11) %>% 
+    left_join(select(codings, item, id_str))
+)
+
+strat_samples$people %>% 
+  group_by(percentile, post_class) %>% 
+  summarise(items = paste(sort(item), collapse = ", ")) %>% 
+  knitr::kable(caption = "Items sampled from stratified grouping computed for posterior uncertainty in people-centrism classification.")
+```
+
+
+#### Posterior coder abilities
+
+In addition to classification quality, we are also interested in the distribution of coder abilities.
+
+First, we can inspect posterior estimates of coders' sensitivity and specificity parameters:
+
+```{r inspect thetas people-centrism, echo = FALSE}
+people_post_thetas <- get_mcmc_estimates(people_mcmc_fit_t, "theta\\d\\[\\d+\\]")
+
+people_post_thetas %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = gsub("\\]$", "", coder)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
+  ggplot(
+    aes(
+      y = factor(coder, levels = 1:n_coders)
+      , x = est
+      , group = coder
+    )
+  ) +
+  geom_density_ridges(
+    scale = .5
+    # , color = "darkgrey"
+    , color = NA
+    , fill = "grey"
+  ) +
+  # scale_x_continuous(limits = c(0,1))+
+  facet_grid(
+    rows = vars(parameter)
+    , labeller = label_parsed
+    , switch = "y"
+  ) + 
+  labs(
+    title = "Posterior densities of coders' abilities for people-centrism classification"
+    , subtitle = "Estimates obtained from three MCMC of 40K iterations each, retaining only every 20th estimate"
+    , x = ""
+    , y = "Coder"
+    , fill = "Parameter"
+    , caption = expression(paste(
+      theta[0]," := specificity (true-negative rate); ",
+      theta[1]," := sensitivity (true-positive rate)"
+    ))
+  ) + 
+  coord_flip() +
+  theme_bw() +
+  theme(
+    strip.text.y = element_text(angle = 180)
+    , plot.caption = element_text(hjust = 0)
+  )
+```
+
+The picture is relatively homogenous:
+Coders are generally found to be highly specific, that is, to perform well in correctly classifying negative items.
+The mass of most posterior densities of $\theta_{0\cdot}$ parameters is in the range $[.75,1)$.
+With regard to coders' true-positive detection abilities, there are some outliers with sensitivities in the range $[.4, .6]$ (e.g., coders 7-9, 17, 38, and 39) and even substantial posterior densitiy mass below .5 (specifically coder 32).
+Hence, the distribution of posterior means is more dispersed in case of sensitivities than specificities:
+
+```{r plot distr thetas people-centrism}
+people_post_thetas %>% 
+  group_by(parameter) %>%
+  summarize(est = mean(est)) %>%
+  mutate(param = if_else(grepl("^theta0", parameter), "bar(theta)[0]", "bar(theta)[1]")) %>% 
+  ggplot(aes(x = est)) +
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  facet_grid(cols = vars(param), labeller = label_parsed) + 
+  theme_bw()+ 
+  labs(
+    title = "Distribution of mean posterior ability parameters in people-centrism classification"
+    , subtitle = "Means computed at coder-level by aggregating estimates across iterations and chains"
+    , y = "Density"
+    , x = NULL
+  )
+```
+
+Note, however, that the larger dispersion of posterior sensitivity estimates is also an artifact of the imbalence of positive to negative instances in the dataset. 
+With an estimated prevalence of positive items of about 10%, there are in expectaition ten times more data points to estimate a coder's specificity than there are to estimate her sensitivity; hence the higher posterior uncertainty in the latter estimates.
+
+This becomes more clear when looking at the distributions of mean and scale estimates of the sensitivity and specificity hyperdistributions:
+```{r inspect hyperpars people-centrism 1}
+people_post_hyperpars <- get_mcmc_estimates(people_mcmc_fit_t, "^(alpha|beta)(0|1)$")
+
+people_post_hyperpars_rescaled <- people_post_hyperpars %>% 
+  mutate(
+    param = sub(".+(\\d)$", "theta[\\1]", parameter)
+    , parameter = sub("\\d$", "", parameter)
+  ) %>% 
+  spread(parameter, est) %>% 
+  mutate(
+    scale = alpha + beta
+    , mean = alpha/(alpha + beta)
+  ) 
+
+ggplot(
+  data = people_post_hyperpars_rescaled
+  , aes(x = mean, y = scale, group = param)
+) +
+    geom_point(alpha = .5, size = .5) +
+    facet_grid(~param, labeller = label_parsed) +
+    labs(
+      title = "MCMC posterior estimates of hyperparamters in people-centrism classification"
+      , x = expression(alpha[.]/(alpha[.]+beta[.]))
+      , y = expression(alpha[.]+beta[.])
+    ) +
+    theme_bw()
+```
+While we can be quite confident that coders' specificities are drawn from a Beta-distribution with a mean in the the 90%-confidence range [`r quantile(as.data.frame(people_post_hyperpars_rescaled[people_post_hyperpars_rescaled$param == "theta[0]", "mean"])[,1], c(.05, .95))`] and a scale in the range 
+[`r quantile(as.data.frame(people_post_hyperpars_rescaled[people_post_hyperpars_rescaled$param == "theta[0]", "scale"])[,1], c(.05, .95))`], posterior estimates of the mean and scale of the sensitivitiy hyperdistribution are much more dispersed: 90% of the posterior density lies in the range [`r quantile(as.data.frame(people_post_hyperpars_rescaled[people_post_hyperpars_rescaled$param == "theta[1]", "mean"])[,1], c(.05, .95))`] for the mean, and [`r quantile(as.data.frame(people_post_hyperpars_rescaled[people_post_hyperpars_rescaled$param == "theta[1]", "scale"])[,1], c(.05, .95))`] for the scale.
+
+Due to the flexibility of the Beta-distribution into which these hyperparameters feed, depending on the selected quantile values we get differently shaped posterior densitie, as the next figure illustrates:
+
+```{r inspect hyperpars people-centrism 2}
+people_post_hyperpars_sum <- people_post_hyperpars %>% 
+  group_by(parameter) %>% 
+  # summarise(mean = mean(est)) %>% 
+  summarise(
+    `'10%'` = quantile(est, .1)
+    , `'25%'` = quantile(est, .25)
+    , `'50%'` = quantile(est, .5)
+    , `'75%'` = quantile(est, .75)
+    , `'90%'` = quantile(est, .90)
+  ) %>% 
+  # mutate(shapes = sprintf("theta[%s]%sf[Beta](alpha, beta)", sub(".*(\\d)$", "\\1", parameter), "%~%")) %>% 
+  mutate(shapes = sprintf("theta[%s]", sub(".*(\\d)$", "\\1", parameter))) %>% 
+  gather(stat, val, -parameter, -shapes) %>% 
+  spread(parameter, val) %>% 
+  unite(param, -shapes, -stat) %>% 
+  mutate(
+    param = gsub("NA", "", param)
+    , param = gsub("^_|_$", "", param)
+  ) %>% 
+  separate(param, c("alpha", "beta"), sep = "_+") %>% 
+  mutate_at(3:4, as.numeric)
+
+people_post_hyperpars_sum %>% 
+  pmap_df(function(shapes, stat, alpha, beta, x = seq(0, 1, .01)){
+    tibble(
+      shapes = shapes
+      , stat = stat
+      , x = x
+      , density = dbeta(x, alpha, beta)
+    )
+  }) %>% 
+    ggplot(aes(x = x, y = density, group = stat)) +
+    geom_line() +
+    scale_x_continuous(breaks = 0:1) +
+    facet_grid(
+      rows = vars(shapes)
+      , cols = vars(stat)
+      , switch = "y"
+      , labeller = label_parsed
+    ) +
+    geom_text(
+      data = people_post_hyperpars_sum
+      , mapping = aes(
+        x = .5
+        , y = 7
+        , label = paste0("α = ", round(alpha, 3), "\n", "β = ", round(beta, 3))
+      )
+      , size = 3
+    ) +
+    labs(
+      title = expression(paste(
+        "Posterior densities of ", theta[0], " and ", theta[1],
+        " for people-centrism classification"
+      ))
+      , subtitle = "Densities computed for different quantiles of marignal posterior distributions of hyperparameters"
+      , x = NULL
+      , y = "Density"
+    ) + 
+    theme_bw() +
+    theme(strip.text.y = element_text(angle = 180))
+```
+
+From the ability hyperdistributions we can conclude that the mass of coders are very specific and overwhelmingly non-adversarial but less perfect when classifying  true-positive items.
+
+#### (Dis)Agreement with majority-voting classifications
+
+Most studies applying content analytical (i.e., human-coding based) instruments to measure populism in textual data use majority voting to aggregate codings at the item level.
+However, majority voting may produce biased results if coders provide noisy judgments [@passonneau_benefits_2014].
+Hence, we want to know whether or not model-based posterior estimates and majority voting imply different classifications.
+
+```{r people_class_pcu_agreement}
+people_voted <- people_codings %>% 
+  group_by(item) %>% 
+  summarise(
+    n_i = n()
+    , n_pos = sum(judgment)
+    , n_neg = sum(!judgment)
+    , tie_breaker = rbernoulli(1) 
+    , voted = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) 
+
+people_post_class <- people_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(
+    n_pos = sum(est)
+    , n_neg = sum(!est)
+    , tie_breaker = rbernoulli(1) 
+    , post_class = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) %>% 
+  mutate(item = as.integer(sub(".*\\[(\\d+)\\]$", "\\1", parameter)))
+
+people_class_pcu_agreement <- people_voted %>% 
+  left_join(people_post_class, by = "item") %>% 
+  select(item, voted, post_class, n_i) %>% 
+  mutate(agree = if_else(voted == post_class, "yes", "no")) %>% 
+  group_by(agree, post_class, n_i) %>% 
+  summarise(n = n(), prop = n()/n_items)
+
+knitr::kable(
+  people_class_pcu_agreement
+  , digits = 3
+  , col.names = c("Agree", "Posterior Classification", "$n_i$", "$N$", "Proportion")
+  , caption = "(Dis)Agreement of model-based posterior classification and majority voting for people-centrism classification."
+)
+
+corrected_coders <- people_voted %>% 
+  left_join(people_post_class, by = "item") %>% 
+  filter(n_i == 1) %>% 
+  select(item, voted, post_class) %>% 
+  filter(voted != post_class) %>% 
+  left_join(people_codings) %>% 
+  .$coder %>% 
+  unique()
+
+corrected_coders_ranks <- people_post_thetas %>% 
+  filter(grepl("^theta0", parameter)) %>% 
+  group_by(coder = as.integer(sub(".+\\[(\\d+)\\]$", "\\1", parameter))) %>% 
+  summarise(spec_mean = mean(est)) %>% 
+  arrange(desc(spec_mean)) %>% 
+  mutate(
+    rank = row_number()
+    , misclassification_rate = round(1/(1-spec_mean))
+  ) %>% 
+  filter(coder %in% corrected_coders) %>% 
+  arrange(coder)
+
+```
+
+Indeed there are in total only `r sum(subset(people_class_pcu_agreement, agree == "no", n))` out of `r n_items` items (i.e., `r sum(subset(people_class_pcu_agreement, agree == "no", prop))*100`%) for which model-based and majority-voting classifications disagree. 
+The vast share of this disagreement results from items that are classified as featuring people-centrism with majortiy voting but not when using BBA model-based aggregation (`r sum(subset(people_class_pcu_agreement, agree == "no" & !post_class, n))`).
+
+Importantly, this disagreement occurs most often (33 times) where only one coder judged an item.
+This is due to fact that model-based classifications account for coding errors induced by coders (lack of) sensitivity.
+Inspecting all these 33 judgments, we see that they come from coders \{`r paste(sort(corrected_coders), collapse = ", ")`\}.
+These coders, have relatively low specificities (they have ranks `r corrected_coders_ranks$rank` out of 40 in terms of their mean posterior specificity estimates, and are expected to misclassify one out of `r corrected_coders_ranks$misclassification_rate` truely negative items, respectively):
+
+```{r }
+# people_post_thetas %>% 
+#   mutate(
+#     param = sub(".+(\\d)\\[.+", "theta[\\1]", parameter)
+#     , coder = as.integer(sub(".+\\[(\\d+)\\]$", "\\1", parameter))
+#   ) %>% 
+#   filter(param == "theta[0]") %>% 
+#   select(est, param, coder) %>% 
+#   mutate(corrected = !coder %in% corrected_coders) %>% 
+#   ggplot(
+#     aes(
+#       x = est
+#       , y = as.factor(coder)
+#       , group = coder
+#       , fill = corrected
+#     )
+#   ) +
+#     geom_density_ridges(color = NA, alpha = .5, scale = 1) +
+#     scale_fill_discrete(guide = FALSE) + 
+#     facet_grid(~param, labeller = label_parsed, scales = "free") + 
+#     coord_flip() + 
+#     theme_bw() + 
+#     labs(
+#       x = NULL
+#       , y = NULL
+#     )
+```
+
+As a consequence of these differences, the empirical prevalence (not to confuse with $\pi$) differs somewhat between classification methods:
+`r round(sum(people_voted$voted)/n_items, 3)` in case of majority voting vs.
+`r round(sum(people_post_class$post_class)/n_items, 3)` in model-based classification.
+
+#### Sampling items for repeated coding
+
+
+
+```{r }
+
+```
+
+people_post_cs_sd %>% 
+  mutate(Percentile = ntile(sd, 10))
+
+### Anti-elitism
+
+#### Estimation
+
+I obtain MCMC estimates using JAGS with three chains, 5K burn-in iterations, and 15K iterations with thinning parameter set to 15. 
+These choices are based on inspecting convergence and autocorrelation in initial models with fewer iterations and less (or no) thinning.
+
+
+```{r fit anti-elitism, eval = FALSE, include = FALSE}
+# subset codings
+elite_codings <- codings %>%
+  mutate(judgment = as.integer(elites)) %>% 
+  filter(!is.na(judgment)) %>% 
+  select(index, item, coder, judgment) 
+
+# contruct model-compatible MCMC data object
+elite_mcmc_data <- get_codings_data(elite_codings)
+
+# initialize model
+elite_mcmc_model <- jags.model(
+  file = model_file_path
+  , data = elite_mcmc_data
+  , inits = init_vals
+  , n.chains = n_chains
+)
+
+update(elite_mcmc_model, 5000)
+
+elite_mcmc_fit <- coda.samples(
+  elite_mcmc_model
+  , variable.names = c(
+    "deviance"
+    , "pi"
+    , "c"
+    , "theta0", "theta1"
+    , "alpha0", "beta0"
+    , "alpha1", "beta1"
+  )
+  , n.iter = 15000
+  , thin = 15
+)
+
+fits$elite_mcmc_fit <- elite_mcmc_fit
+```
+
+```{r load anti-elite fit, include = FALSE}
+elite_codings <- codings %>%
+  mutate(judgment = as.integer(elites)) %>% 
+  filter(!is.na(judgment)) %>% 
+  select(index, item, coder, judgment) 
+
+elite_mcmc_fit <-  fits$elite_mcmc_fit
+```
+
+Judging by the DIC, all chains mix nicely and converege quickly.
+And with the thinning parameter set to 15, we effectly reduce autocorrelation to tolerable levels.
+```{r inspect dic anti-elite}
+plot(elite_mcmc_fit[, "deviance"])
+gelman.plot(elite_mcmc_fit[, "deviance"])
+autocorr.plot(elite_mcmc_fit[, "deviance"])
+```
+
+As in the case of people-centrism classification, the model however converged on the inverse parameter assignment, so that we need to post-hoc transform estimates to the correct assignment.
+
+```{r trans elite_mcmc_fit}
+elite_mcmc_fit_t <- transform_betabin_fit_posthoc(elite_mcmc_fit)
+```
+
+#### Posterior prevalence of anti-elitism
+
+```{r inspect pi anti-elitism}
+elite_post_pi <- get_mcmc_estimates(elite_mcmc_fit_t, "pi")
+
+ggplot(elite_post_pi, aes(x = est)) + 
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  theme_bw() +
+  labs( 
+    title = "Posterior density of prevalence of anti-elitism in validation texts"
+    , subtitle = "Estimates obtained from three MCMC of 15K iterations each, retaining only every 15th estimate"
+    , x = expression(pi)
+    , y = "Density"
+  )
+```
+
+The posterior density is unimodal and the mean of the prevalence is `r mean(elite_post_pi$est)`, that is, in expectation about every fifth social media post generated by party leaders or party accounts features anti-elitism.
+
+#### Posterior classification uncertainty
+
+We see that with only a few judgments per item, there is much variability in classification uncertainty when aggregating across chains and iterations at the item level:
+
+```{r inspect c elite-centrism}
+elite_post_cs <- get_mcmc_estimates(elite_mcmc_fit_t, "c\\[\\d+\\]")
+
+elite_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(sd = sd(est)) %>% 
+  ggplot(aes(x = sd)) +
+    geom_density(color = NA, fill = "grey", alpha = .75) +
+  theme_bw() +
+  labs( 
+    title = "Posterior classification uncertainty of anti-elitism in validation texts"
+    , subtitle = "Estimates obtained from three MCMC of 15K iterations each, retaining only every 20th estimate"
+    , x = expression(SD(c[i]))
+    , y = "Density"
+  )
+```
+
+While about one third of items can be assigned with little posterior classification uncertainty, 
+a substantial number of items is characterized with moderate to high levels of posterior classification uncertainty ($\text{SD}(c_i) \geq .25$).
+Hence, we have the following mean and standard devation values of posterior classification uncertainty in anti-elitism classification:
+```{r stats c anti-elitism}
+elite_post_cs_stats <- elite_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(sd = sd(est)) %>% 
+  ungroup() %>% 
+  summarise(avg_sd = mean(sd), sd_sd = sd(sd))
+
+knitr::kable(
+  elite_post_cs_stats
+  , col.names = c("Average", "S.D.")
+  , caption = "Posterior classification uncertainty in anti-elitism classification"
+)
+```
+
+#### Posterior coder abilities
+
+```{r inspect thetas anti-elitism}
+elite_post_thetas <- get_mcmc_estimates(elite_mcmc_fit_t, "theta\\d\\[\\d+\\]")
+
+elite_post_thetas %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = gsub("\\]$", "", coder)
+    # make use of regex capturing grpoup operator (https://stackoverflow.com/a/48365518)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
+  ggplot(
+    aes(
+      y = factor(coder, levels = 1:n_coders)
+      , x = est
+      , group = coder
+    )
+  ) +
+  geom_density_ridges(
+    scale = .5
+    , color = "darkgrey"
+  ) +
+  scale_x_continuous(limits = c(0,1))+
+  facet_grid(
+    rows = vars(parameter)
+    , labeller = label_parsed
+    , switch = "y"
+  ) + 
+  labs(
+    title = "Posterior densities of coders' abilities for anti-elitism classification"
+    , subtitle = "Estimates obtained from three MCMC of 15K iterations each, retaining only every 15th estimate"
+    , x = ""
+    , y = "Coder"
+    , fill = "Parameter"
+    , caption = expression(paste(
+      theta[0]," := specificity (true-negative rate); ",
+      theta[1]," := sensitivity (true-positive rate)"
+    ))
+  ) + 
+  coord_flip() +
+  theme_bw() +
+  theme(
+    strip.text.y = element_text(angle = 180)
+    , plot.caption = element_text(hjust = 0)
+  )
+```
+
+Inspecting posterior estimates of coders' sensitivity and specificity parameters, the picture is similar to that in case of people-centrism classification:
+Coders are generally highly specific, yet the samopled coders are more heterogenous with regard to their abilities to correctly classify positive items, as is illustrated by the following figure:
+
+```{r plot distr thetas anti-elitism}
+elite_post_thetas %>% 
+  # filter(grepl("^theta0", parameter)) %>% 
+  group_by(parameter) %>%
+  summarize(est = mean(est)) %>%
+  mutate(param = if_else(grepl("^theta0", parameter), "bar(theta)[0]", "bar(theta)[1]")) %>% 
+  ggplot(aes(x = est)) +
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  facet_grid(cols = vars(param), labeller = label_parsed) + 
+  theme_bw()+ 
+  labs(
+    title = "Distribution of mean posterior ability parameters in anti-elite classification"
+    , subtitle = "Means computed at coder-level by aggregating estimates across iterations and chains"
+    , y = "Density"
+    , x = NULL
+  )
+```
+
+Having specified uninformative priors, the validation data gives reason to believe that the coder population is somewhat heterogenous in terms of classification abilities, but more often than not non-adversarial and better than chance.
+This is confirmed when looking at the distributions of hyperparameters of sensitivity and specificity distributions:
+```{r inspect hyperpars anti-elitism}
+elite_post_hyperpars <- get_mcmc_estimates(elite_mcmc_fit_t, "^(alpha|beta)(0|1)$")
+
+elite_post_hyperpars %>% 
+  mutate(parameter  = gsub("(\\d)$", "[\\1]", parameter)) %>% 
+  ggplot(aes(
+    y = est
+    , x = factor(parameter, levels = c("beta[1]", "alpha[1]", "beta[0]", "alpha[0]"))
+    , group = parameter
+  )) +
+  geom_violin(
+    color = "darkgrey"
+    , fill = "grey"
+    # , alpha = .75
+  ) +
+  scale_x_discrete(labels=parse(text = c("beta[1]", "alpha[1]", "beta[0]", "alpha[0]"))) +
+  coord_flip() +
+  theme_bw() + 
+  labs(
+    title = "Posterior densities of shape parameters of coder ability distributions for anti-elitism classification"
+    , subtitle = ""
+    , x = "Estimate"
+    , y = "Parameter"
+    , caption = expression(paste(
+      alpha[0], ",", beta[0]," := shape parameters of Beta-distribution of coder specificities; ",
+      alpha[1], ",", beta[1]," := shape parameters of Beta-distribution of coder sensitivities"
+    ))
+  )
+
+elite_post_hyperpars_sum_temp <- elite_post_hyperpars %>% 
+  group_by(parameter) %>% 
+  # summarise(mean = mean(est)) %>% 
+  summarise(
+    q05 = quantile(est, .05)
+    , q95 = quantile(est, .95)
+  )
+```
+
+Compared to hyperparameter estimates in the case of people-centrism classification, densities are less dispersed with the minor exception of $\alpha_0$
+Take for instance the shape parameters of coders' specificities, $\alpha_1, \beta_1$. 
+80% of their values lie in the range $\alpha_1 \in$ [`r subset(elite_post_hyperpars_sum_temp, parameter == "alpha1", 2:3) %>% as.numeric()`] and $\beta_1 \in$ [`r subset(elite_post_hyperpars_sum_temp, parameter == "beta1", 2:3) %>% as.numeric()`]. 
+Due to the flexibility of the Beta-distribution into which these hyperparameters feed, depending on the selected quantile values we get differently shaped posterior densitie, as the next plot illustrates.
+
+```{r inspect hyperpars anti-elitism 2}
+elite_post_hyperpars_sum <- elite_post_hyperpars %>% 
+  group_by(parameter) %>% 
+  # summarise(mean = mean(est)) %>% 
+  summarise(
+    `'10%'` = quantile(est, .1)
+    , `'25%'` = quantile(est, .25)
+    , `'50%'` = quantile(est, .5)
+    , `'75%'` = quantile(est, .75)
+    , `'90%'` = quantile(est, .90)
+  ) %>% 
+  # mutate(shapes = sprintf("theta[%s]%sf[Beta](alpha, beta)", sub(".*(\\d)$", "\\1", parameter), "%~%")) %>% 
+  mutate(shapes = sprintf("theta[%s]", sub(".*(\\d)$", "\\1", parameter))) %>% 
+  gather(stat, val, -parameter, -shapes) %>% 
+  spread(parameter, val) %>% 
+  unite(param, -shapes, -stat) %>% 
+  mutate(
+    param = gsub("NA", "", param)
+    , param = gsub("^_|_$", "", param)
+  ) %>% 
+  separate(param, c("alpha", "beta"), sep = "_+") %>% 
+  mutate_at(3:4, as.numeric)
+
+elite_post_hyperpars_sum %>% 
+  pmap_df(function(shapes, stat, alpha, beta, x = seq(0, 1, .01)){
+    tibble(
+      shapes = shapes
+      , stat = stat
+      , x = x
+      , density = dbeta(x, alpha, beta)
+    )
+  }) %>% 
+    ggplot(aes(x = x, y = density, group = stat)) +
+    geom_line() +
+    scale_x_continuous(breaks = 0:1) +
+    facet_grid(
+      rows = vars(shapes)
+      , cols = vars(stat)
+      , switch = "y"
+      , labeller = label_parsed
+    ) +
+    geom_text(
+      data = elite_post_hyperpars_sum
+      , mapping = aes(
+        x = .5
+        , y = 7
+        , label = paste0("α = ", round(alpha, 3), "\n", "β = ", round(beta, 3))
+      )
+      , size = 3
+    ) +
+    labs(
+      title = expression(paste(
+        "Posterior densities of ", theta[0], " and ", theta[1],
+        " for anti-elitism classification"
+      ))
+      , subtitle = "Densities computed for different quantiles of marignal posterior distributions of hyperparameters"
+      , x = NULL
+      , y = "Density"
+    ) + 
+    theme_bw() +
+    theme(strip.text.y = element_text(angle = 180))
+```
+
+With above-median hyperparameter values, however, posterior ability distributions have their vast shares of mass on non-adversarial values (i.e., > .5), and again, we have reason to believe that coders are both highly specific as well as, though somewhat less so, sensitive. 
+
+#### (Dis)Agreement with majority-voting classifications
+
+Again, we want to know whether or not model-based posterior estimates and majority voting imply different classifications.
+
+```{r elite_class_pcu_agreement}
+elite_voted <- elite_codings %>% 
+  group_by(item) %>% 
+  summarise(
+    n_i = n()
+    , n_pos = sum(judgment)
+    , n_neg = sum(!judgment)
+    , tie_breaker = rbernoulli(1) 
+    , voted = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) 
+
+elite_post_class <- elite_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(
+    n_pos = sum(est)
+    , n_neg = sum(!est)
+    , tie_breaker = rbernoulli(1) 
+    , post_class = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) %>% 
+  mutate(item = as.integer(sub(".*\\[(\\d+)\\]$", "\\1", parameter)))
+
+elite_class_pcu_agreement <- elite_voted %>% 
+  left_join(elite_post_class, by = "item") %>% 
+  select(item, voted, post_class, n_i) %>% 
+  mutate(agree = if_else(voted == post_class, "yes", "no")) %>% 
+  group_by(agree, post_class, n_i) %>% 
+  summarise(n = n(), prop = n()/n_items)
+
+knitr::kable(
+  elite_class_pcu_agreement
+  , digits = 3
+  , col.names = c("Agree", "Posterior Classification", "$n_i$", "$N$", "Proportion")
+  , caption = "(Dis)Agreement of model-based posterior classification and majority voting for anit-elite classification."
+)
+
+
+```
+
+Indeed there are in total only `r sum(subset(elite_class_pcu_agreement, agree == "no", n))` out of `r n_items` items for which model-based and majority-voting classifications disagree. 
+As a consequence of these differences, the empirical prevalence (not to confuse with $\pi$) differes only slightly between classification methods:
+`r round(sum(elite_voted$voted)/n_items, 3)` in case of majority voting vs.
+`r round(sum(elite_post_class$post_class)/n_items, 3)` in model-based classification.
+
+
+### Exclusionism
+
+#### Estimation
+
+I obtain MCMC estimates using JAGS with three chains, 10K burn-in iterations, and 100K iterations with thinning parameter set to 50. 
+These choices are based on inspecting convergence and autocorrelation in initial models with fewer iterations and less (or no) thinning.
+
+
+```{r fit exclusionism, eval = FALSE, include = FALSE}
+# subset codings
+exclusio_codings <- codings %>%
+  mutate(judgment = as.integer(exclusionary)) %>% 
+  filter(!is.na(judgment)) %>% 
+  select(index, item, coder, judgment) 
+
+# contruct model-compatible MCMC data object
+exclusio_mcmc_data <- get_codings_data(exclusio_codings)
+
+# initialize model
+exclusio_mcmc_model <- jags.model(
+  file = model_file_path
+  , data = exclusio_mcmc_data
+  , inits = init_vals
+  , n.chains = n_chains
+)
+
+update(exclusio_mcmc_model, 10000)
+
+exclusio_mcmc_fit <- coda.samples(
+  exclusio_mcmc_model
+  , variable.names = c(
+    "deviance"
+    , "pi"
+    , "c"
+    , "theta0", "theta1"
+    , "alpha0", "beta0"
+    , "alpha1", "beta1"
+  )
+  , n.iter = 100000
+  , thin = 50
+)
+
+fits$exclusio_mcmc_fit <- exclusio_mcmc_fit
+saveRDS(fits, fit_file_path)
+```
+
+```{r load anti-exclusio fit, include = FALSE}
+exclusio_codings <- codings %>%
+  mutate(judgment = as.integer(exclusionary)) %>% 
+  filter(!is.na(judgment)) %>% 
+  select(index, item, coder, judgment) 
+
+exclusio_mcmc_fit <-  fits$exclusio_mcmc_fit
+```
+
+Judging by the DIC, though chains tend to mix nicely, there is some downwards drift in DIC values that only levels off after the first 50K iterations.
+Hence, the shrinkage factor approaches one only after some ten thousand iterations.
+What is more, with the thinning parameter set to 50 we still have substantial autocorrelation.
+The estimates obtained by fitting the BBA model to the exclusionism judgments are thus to be taken with a grain of salt.
+```{r inspect dic anti-exclusio}
+plot(exclusio_mcmc_fit[, "deviance"])
+gelman.plot(exclusio_mcmc_fit[, "deviance"])
+autocorr.plot(exclusio_mcmc_fit[, "deviance"])
+```
+
+Not also that the model again converged on the inverse parameter assignment, so that I post-hoc transformed estimates to the correct assignment.
+
+```{r trans exclusio_mcmc_fit}
+exclusio_mcmc_fit_t <- transform_betabin_fit_posthoc(exclusio_mcmc_fit)
+```
+
+#### Posterior prevalence of exclusionism
+
+```{r inspect pi exclusionism}
+exclusio_post_pi <- get_mcmc_estimates(exclusio_mcmc_fit_t, "pi")
+
+ggplot(exclusio_post_pi, aes(x = est)) + 
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  theme_bw() +
+  labs( 
+    title = "Posterior density of prevalence of exclusionism in validation texts"
+    , subtitle = "Estimates obtained from three MCMC of 100K iterations each, retaining only every 50th estimate"
+    , x = expression(pi)
+    , y = "Density"
+  )
+```
+
+The posterior density is unimodal, the mean of the prevalence is `r mean(exclusio_post_pi$est)`, and 90% of posterior estimates are in the range `r quantile(exclusio_post_pi$est, c(.05, .95))`.
+
+#### Posterior classification uncertainty
+
+We see that with only a few judgments per item, there already relaitively little classification uncertainty in most items:
+
+```{r inspect c exclusio-centrism}
+exclusio_post_cs <- get_mcmc_estimates(exclusio_mcmc_fit_t, "c\\[\\d+\\]")
+
+exclusio_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(sd = sd(est)) %>% 
+  ggplot(aes(x = sd)) +
+    geom_density(color = NA, fill = "grey", alpha = .75) +
+  theme_bw() +
+  labs( 
+    title = "Posterior classification uncertainty of exclusionism in validation texts"
+    , subtitle = "Estimates obtained from three MCMC of 100K iterations each, retaining only every 50th estimate"
+    , x = expression(SD(c[i]))
+    , y = "Density"
+  )
+```
+
+The mass of items can be assigned with little posterior classification uncertainty,
+and there are only very few items with moderate to high levels of posterior classification uncertainty ($\text{SD}(c_i) \geq .25$).
+For exclusionism in the validation items, we get the following mean and standard devation values of posterior classification uncertainty:
+
+```{r stats c exclusionism}
+exclusio_post_cs_stats <- exclusio_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(sd = sd(est)) %>% 
+  ungroup() %>% 
+  summarise(avg_sd = mean(sd), sd_sd = sd(sd))
+
+knitr::kable(
+  exclusio_post_cs_stats
+  , col.names = c("Average", "S.D.")
+  , caption = "Posterior classification uncertainty in exclusionism classification"
+)
+
+```
+
+#### Posterior coder abilities
+
+In addition to classification quality, we are also interested in the distribution of coder abilities in exclusionism classification.
+
+```{r inspect thetas exclusionism}
+exclusio_post_thetas <- get_mcmc_estimates(exclusio_mcmc_fit_t, "theta\\d\\[\\d+\\]")
+
+exclusio_post_thetas %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = gsub("\\]$", "", coder)
+    # make use of regex capturing grpoup operator (https://stackoverflow.com/a/48365518)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
+  ggplot(
+    aes(
+      y = coder
+      , x = est
+      , group = coder
+    )
+  ) +
+  geom_density_ridges(
+    scale = .5
+    , color = "darkgrey"
+  ) +
+  scale_x_continuous(limits = c(0,1))+
+  facet_grid(
+    rows = vars(parameter)
+    , labeller = label_parsed
+    , switch = "y"
+  ) + 
+  labs(
+    title = "Posterior densities of coders' abilities for exclusionism classification"
+    , subtitle = "Estimates obtained from three MCMC of 100K iterations each, retaining only every 50th estimate"
+    , x = ""
+    , y = "Coder"
+    , fill = "Parameter"
+    , caption = expression(paste(
+      theta[0]," := specificity (true-negative rate); ",
+      theta[1]," := sensitivity (true-positive rate)"
+    ))
+  ) + 
+  coord_flip() +
+  theme_bw() +
+  theme(
+    strip.text.y = element_text(angle = 180)
+    , plot.caption = element_text(hjust = 0)
+  )
+```
+
+Inspecting posterior estimates of coders' sensitivity and specificity parameters, we get a relatively clear-cut and familiar picture.
+Posterior estimates of both coders' sensitivities and specificities are virutally all non-adversarial, and the mass of posterioir densities lies in regions that indicate better-than-chance classification abilities.
+Again, coders are somewhat more heterogenous wirth regard to true-positive classification abilities, as the following plot illustrates:
+```{r plot distr thetas exclusionism}
+exclusio_post_thetas %>% 
+  group_by(parameter) %>%
+  summarize(est = mean(est)) %>%
+  mutate(param = if_else(grepl("^theta0", parameter), "bar(theta)[0]", "bar(theta)[1]")) %>% 
+  ggplot(aes(x = est)) +
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  facet_grid(cols = vars(param), labeller = label_parsed) + 
+  theme_bw()+ 
+  labs(
+    title = "Distribution of mean posterior ability parameters in exclusionism classification"
+    , subtitle = "Means computed at coder-level by aggregating estimates across iterations and chains"
+    , y = "Density"
+    , x = NULL
+  )
+```
+
+Given the validation data we have reason to believe that the coder population may be somewhat heterogenous in terms of true-positive classification abilities, whereas it is highly homogeneous in terms of true-negative classification abilities.
+This is supported when looking at the distributions of hyperparameters of sensitivity and specificity distributions:
+
+```{r inspect hyperpars exclusionism}
+exclusio_post_hyperpars <- get_mcmc_estimates(exclusio_mcmc_fit_t, "^(alpha|beta)(0|1)$")
+
+exclusio_post_hyperpars %>% 
+  mutate(parameter  = gsub("(\\d)$", "[\\1]", parameter)) %>% 
+  ggplot(aes(
+    y = est
+    , x = factor(parameter, levels = c("beta[1]", "alpha[1]", "beta[0]", "alpha[0]"))
+    , group = parameter
+  )) +
+  geom_violin(
+    color = "darkgrey"
+    , fill = "grey"
+    # , alpha = .75
+  ) +
+  scale_x_discrete(labels=parse(text = c("beta[1]", "alpha[1]", "beta[0]", "alpha[0]"))) +
+  coord_flip() +
+  theme_bw() + 
+  labs(
+    title = "Posterior densities of shape parameters of coder ability distributions for exclusionism classification"
+    , subtitle = ""
+    , x = "Estimate"
+    , y = "Parameter"
+    , caption = expression(paste(
+      alpha[0], ",", beta[0]," := shape parameters of Beta-distribution of coder specificities; ",
+      alpha[1], ",", beta[1]," := shape parameters of Beta-distribution of coder sensitivities"
+    ))
+  )
+
+exclusio_post_hyperpars_sum_temp <- exclusio_post_hyperpars %>% 
+  group_by(parameter) %>% 
+  # summarise(mean = mean(est)) %>% 
+  summarise(
+    q05 = quantile(est, .05)
+    , q95 = quantile(est, .95)
+  )
+```
+
+With the minor exception of $\beta_0$, which is characterized by a relatively tight credibility interval, densities are extremely dispersed.
+The resulting hyperdistributions, illustrated in the next figure, give reason to believe that the mass of the coder population is close to perfect in true-negative classification, and less perect, more heterogenous but overwhelmingly non-adversarial and better-than-chance in true-positive classification.
+
+```{r inspect hyperpars exclusionism 2}
+exclusio_post_hyperpars_sum <- exclusio_post_hyperpars %>% 
+  group_by(parameter) %>% 
+  # summarise(mean = mean(est)) %>% 
+  summarise(
+    `'10%'` = quantile(est, .1)
+    , `'25%'` = quantile(est, .25)
+    , `'50%'` = quantile(est, .5)
+    , `'75%'` = quantile(est, .75)
+    , `'90%'` = quantile(est, .90)
+  ) %>% 
+  # mutate(shapes = sprintf("theta[%s]%sf[Beta](alpha, beta)", sub(".*(\\d)$", "\\1", parameter), "%~%")) %>% 
+  mutate(shapes = sprintf("theta[%s]", sub(".*(\\d)$", "\\1", parameter))) %>% 
+  gather(stat, val, -parameter, -shapes) %>% 
+  spread(parameter, val) %>% 
+  unite(param, -shapes, -stat) %>% 
+  mutate(
+    param = gsub("NA", "", param)
+    , param = gsub("^_|_$", "", param)
+  ) %>% 
+  separate(param, c("alpha", "beta"), sep = "_+") %>% 
+  mutate_at(3:4, as.numeric)
+
+exclusio_post_hyperpars_sum %>% 
+  pmap_df(function(shapes, stat, alpha, beta, x = seq(0, 1, .01)){
+    tibble(
+      shapes = shapes
+      , stat = stat
+      , x = x
+      , density = dbeta(x, alpha, beta)
+    )
+  }) %>% 
+    ggplot(aes(x = x, y = density, group = stat)) +
+    geom_line() +
+    scale_x_continuous(breaks = 0:1) +
+    facet_grid(
+      rows = vars(shapes)
+      , cols = vars(stat)
+      , switch = "y"
+      , labeller = label_parsed
+    ) +
+    geom_text(
+      data = exclusio_post_hyperpars_sum
+      , mapping = aes(
+        x = .5
+        , y = 7
+        , label = paste0("α = ", round(alpha, 3), "\n", "β = ", round(beta, 3))
+      )
+      , size = 3
+    ) +
+    labs(
+      title = expression(paste(
+        "Posterior densities of ", theta[0], " and ", theta[1],
+        " for exclusionism classification"
+      ))
+      , subtitle = "Densities computed for different quantiles of marignal posterior distributions of hyperparameters"
+      , x = NULL
+      , y = "Density"
+    ) + 
+    theme_bw() +
+    theme(strip.text.y = element_text(angle = 180))
+```
+
+
+#### (Dis)Agreement with majority-voting classifications
+
+Again, we want to know whether or not model-based posterior estimates and majority voting imply different classifications.
+
+```{r exclusio_class_pcu_agreement}
+exclusio_voted <- exclusio_codings %>% 
+  group_by(item) %>% 
+  summarise(
+    n_i = n()
+    , n_pos = sum(judgment)
+    , n_neg = sum(!judgment)
+    , tie_breaker = rbernoulli(1) 
+    , voted = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) 
+
+exclusio_post_class <- exclusio_post_cs %>% 
+  group_by(parameter) %>% 
+  summarise(
+    n_pos = sum(est)
+    , n_neg = sum(!est)
+    , tie_breaker = rbernoulli(1) 
+    , post_class = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) %>% 
+  mutate(item = as.integer(sub(".*\\[(\\d+)\\]$", "\\1", parameter)))
+
+exclusio_class_pcu_agreement <- exclusio_voted %>% 
+  left_join(exclusio_post_class, by = "item") %>% 
+  select(item, voted, post_class, n_i) %>% 
+  mutate(agree = if_else(voted == post_class, "yes", "no")) %>% 
+  group_by(agree, post_class, n_i) %>% 
+  summarise(n = n(), prop = n()/n_items)
+
+knitr::kable(
+  exclusio_class_pcu_agreement
+  , digits = 3
+  , col.names = c("Agree", "Posterior Classification", "$n_i$", "$N$", "Proportion")
+  , caption = "(Dis)Agreement of model-based posterior classification and majority voting for exclusionism classification."
+)
+
+
+```
+
+Indeed there are in total only `r sum(subset(exclusio_class_pcu_agreement, agree == "no", n))` out of `r n_items` items for which model-based and majority-voting classifications disagree. 
+All disagreement results from items that are classified as featuring exclusionism when using BBA model-based aggregation but not with majortiy voting.
+But as a consequence of random tie-breaking, the empirical prevalence still differs somewhat between classification methods:
+`r round(sum(exclusio_voted$voted)/n_items, 3)` in case of majority voting vs.
+`r round(sum(exclusio_post_class$post_class)/n_items, 3)` in model-based classification.
+
+### Summary
+
+To sum up, we are n now ready to answer the questions raised above about the mean and standard deviations of posterior classification uncertainties.
+
+- In case of people-centrism classification, the average uncertainty in posterior classification as measured by the item-level standard deviation in class assignments agreegated across chains and iterations is `r people_post_cs_stats[,1]` and its standard deviation is `r people_post_cs_stats[,2]`.
+- In case of anti-elitms classification, the average uncertainty in posterior classification is `r elite_post_cs_stats[,1]` and its standard deviation is `r elite_post_cs_stats[,2]`.
+- Finally, in case of exlusionism classification, the average uncertainty in posterior classification is `r exclusio_post_cs_stats[,1]` and its standard deviation is `r exclusio_post_cs_stats[,2]`.
+
+Based in this data we can then perform power analysis to compute thesample sizes required to detect select levels of distance.
+The differences we are generally interest is the change in agreement or measurement quality metrics as the number of judgments aggregated per item, $n_i$, is increased in integer steps.
+
+```{r sample size anaylsis PCU}
+compute_sample_size <- function(
+  mean1
+  , pop.var
+  , r = .9
+  , power = .9
+  , confidence.level = .9
+  , one.tailed = TRUE
+){
+  
+  if (one.tailed)
+    confidence.level <- confidence.level/2
+  
+  d <- abs(mean1 - mean1*r)
+  
+  ceiling((qnorm(confidence.level) + qnorm(power))^2*2*pop.var/d^2)
+}
+
+ss_pcu_people <- compute_sample_size(people_post_cs_stats$avg_sd, people_post_cs_stats$sd_sd^2)
+ss_pcu_elite <- compute_sample_size(elite_post_cs_stats$avg_sd, elite_post_cs_stats$sd_sd^2)
+ss_pcu_exclu <- compute_sample_size(exclusio_post_cs_stats$avg_sd, exclusio_post_cs_stats$sd_sd^2)
+```
+
+With the exception of bias, which cannot be assessed here due to the lack of gold-standard labels, the hypotheses formualted at the outset of this analysis are all directional and thus demand one-tailed tests.
+Say, we would want to be able to detect a decrease of 10% in average posterior classification uncertainty, that is, an average 
+value of `r people_post_cs_stats$avg_sd*.9` instead of `r people_post_cs_stats$avg_sd` in case of people-centrism classification,
+an average of `r elite_post_cs_stats$avg_sd*.9` instead of `r elite_post_cs_stats$avg_sd` in case of anti-elitism classification, and 
+an average of `r elite_post_cs_stats$avg_sd*.9` instead of `r elite_post_cs_stats$avg_sd` in case of exclusionism classification.
+For set confidence levels $\alpha = .1$ and statistical power $\beta = .9$, we then would need let multiple coders judge at least `r ss_pcu_people`, `r ss_pcu_elite`, and `r ss_pcu_exclu` items, respectively.
+
+```{r sample size anaylsis K-alpha}
+people_kalphas <- people_codings %>% 
+  select(-index) %>% 
+  # icr::krippalpha expects Coder X Item format, hence reshape
+  spread(item, judgment, sep = "_") %>% 
+  select(-coder) %>% 
+  as.matrix() %>% 
+  icr::krippalpha(
+    data = .
+    , metric = "nominal"
+    , bootstrap = TRUE
+    , nboot = 1000L
+    , cores = 2
+    , seed = rep(1234L, 6)
+  ) %>% 
+  .$bootstraps %>% 
+  tibble(kalpha = .)
+
+ss_kal_people <- compute_sample_size(mean(people_kalphas$kalpha), sd(people_kalphas$kalpha)^2, r = 1.025)
+
+elite_kalphas <- elite_codings %>% 
+  select(-index) %>% 
+  # icr::krippalpha expects Coder X Item format, hence reshape
+  spread(item, judgment, sep = "_") %>% 
+  select(-coder) %>% 
+  as.matrix() %>% 
+  icr::krippalpha(
+    data = .
+    , metric = "nominal"
+    , bootstrap = TRUE
+    , nboot = 1000L
+    , cores = 2
+    , seed = rep(1234L, 6)
+  ) %>% 
+  .$bootstraps %>% 
+  tibble(kalpha = .)
+
+ss_kal_elite <- compute_sample_size(mean(elite_kalphas$kalpha), sd(elite_kalphas$kalpha)^2, r = 1.025)
+
+exclusio_kalphas <- exclusio_codings %>% 
+  select(-index) %>% 
+  # icr::krippalpha expects Coder X Item format, hence reshape
+  spread(item, judgment, sep = "_") %>% 
+  select(-coder) %>% 
+  as.matrix() %>% 
+  icr::krippalpha(
+    data = .
+    , metric = "nominal"
+    , bootstrap = TRUE
+    , nboot = 1000L
+    , cores = 2
+    , seed = rep(1234L, 6)
+  ) %>% 
+  .$bootstraps %>% 
+  tibble(kalpha = .)
+
+ss_kal_exclusio <- compute_sample_size(mean(exclusio_kalphas$kalpha), sd(exclusio_kalphas$kalpha)^2, r = 1.025)
+```
+
+With regard to intercoder reliability metrics, we obtain the following statistics by generating 1000 bootstrapped estimates:
+```{r tab statistics K-alpha}
+sumstats <- function(id, x){
+  tibble(id, mean = mean(x), sd = sd(x))
+}
+
+rbind(
+  sumstats("People-centrism", people_kalphas$kalpha)
+  , sumstats("Anti-elitism", elite_kalphas$kalpha)
+  , sumstats("Exclusionism", exclusio_kalphas$kalpha)
+) %>% 
+  knitr::kable(
+    digits = 3
+    , col.names = c("Dimension", "Average", "S.D.")
+    , caption = "Bootstrapped statistics of intercoder realiability metrics Krippendorff's $\\alpha$"
+  )
+```
+
+Say we want to be able to detect increases in intercoder reliability of 2.5%. 
+Then we need to collect judgments for `r ss_kal_people` for people-centrism,  
+`r ss_kal_elite` for anti-elitism, and
+`r ss_kal_exclusio` for exclusionism classification, respectively.
+
+## Simulation study 
+
+<center>[to be added]</center>

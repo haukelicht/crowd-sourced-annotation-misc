@@ -1,0 +1,1832 @@
+---
+header-includes:
+  - \usepackage{items}
+  - \usepackage{graphicx}
+  - \usepackage{float}
+  - \floatstyle{plaintop}
+  - \newfloat{model}{thp}{lop}
+  - \floatname{model}{Model}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage[font=normalsize,labelfont=bf,labelsep=colon,position=top,width=.95\textwidth]{caption}
+  - \captionsetup[table]{skip=10pt}
+  - \captionsetup[figure]{skip=10pt}
+  - \usepackage{multirow}
+  - \usepackage{makecell}
+  - \usepackage{amsmath}
+output: 
+  pdf_document:
+    number_sections: true
+    # citation_package: natbib
+    keep_tex: true
+    fig_caption: true
+    # latex_engine: pdflatex
+    template: ~/switchdrive/config/Rmarkdown/svm-latex-ms.tex
+title: "Evaluation coder abilities and labeling quality in crowd-sourced judgments of
+  populist elite critique"
+thanks: "Report written for project group *Crowd-sourced measurement of  anti-elite rhetoric*. Version: `r format(Sys.time(), '%B %d, %Y')`.  Author contact: hauke.licht@uzh.ch"
+author:
+- name: Hauke Licht
+  affiliation: "Department of Political Science, University of Zürich"
+abstract: Whereas anti-elite discourse is recuring phenomenon of contemporary political discourse in many Western democracies, comparative research on anti-elitism in electoral competition is currently stymed by the lack of measurement instruments that are capable to scale to large sets of partisan actors and windows of time.
+  In this paper, I present and evaluate crowd-sourced measurement as an approach that is devised to overcome the scalability limitations of existing measurement instruments.
+  I address three questions.
+  First, I assess crowd coders' abilities to classify elite critique, as well as the variability in abilities across coders.
+  Second, I investigate the quality of measurements obtained by aggregating crowd-sourced judgments, and how this quality changes as the number of coded instances and the number of judgments aggregated per instance are increased.
+  Third, I examine how measurement quality differes between aggregation methods, comparing majority voting and a Bayesian model-based approache.
+  I use both real judgments collected by Hua, Abou-Chadi, and Barberá (2018, 2019) and simulated judgments to answer these questions.
+  My findings indicate that crowd coders exhibit on average rather low true-positive detection abilities compared to their performances in true-negative detection and that true-positive detection abilities vary more strongly across coders. 
+  Moreover, I show that aggregating increasing numbers of judgments per instance increases the quality of instance-level measurements as well as the overall accuracy of measurements, whereas the qualty gains achieved by increasing the number of coded instances are negligible.
+  Finally, comparing changes in the accuracy of model-based and majority-voting induced labelings, I show that as numbers of judgments aggregated per instance is increased, (i) measurement quality improvements occur more quickly with model-based labeling and (ii) model-base lableling tends to outperform majority voting---particularly so when the number of coded instances relatively high.
+  My study thus has important implications for reliability considerations pertaining to the crowd-sourced measurement of elite critique in political texts.
+keywords: "crowd-sourced measurement, crowd coding, elite critique, labeling quality"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+citecolor: black
+urlcolor: black
+linkcolor: black
+# fontfamily: mathpazo
+fontsize: 12pt
+spacing: onehalf
+bibliography: /Users/licht/switchdrive/Documents/work/phd/phd_research.bib
+biblio-style: apsr
+---
+
+```{r knitr, echo = FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE
+  , eval = TRUE
+  , warning = FALSE
+  , message = FALSE
+  , fig.align = 'center'
+  , fig.height = 3
+  , fig.width = 6
+  # , fig.ext = "png"
+  , fig.pos = "H"
+)
+```
+
+```{r setup, eval = TRUE}
+options(digits = 3)
+
+# set the file path
+file_path <- file.path("~", "switchdrive", "Documents", "work", "phd", "methods", "crowd-sourced_annotation")
+
+# load required namespaces
+
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(stringr)
+library(rjags)
+library(kableExtra)
+library(ggplot2)
+library(ggridges)
+library(grid)
+library(gridExtra)
+library(gtable)
+library(extrafont)
+# loadfonts(device = "win")
+
+
+theme_set(
+  theme_bw() +
+    theme(
+      legend.position = "bottom"
+      # Roman font: see https://medium.com/@fulowa/latex-font-in-a-ggplot-9120caaa5250
+      , text = element_text(size=10, family="LM Roman 10")
+      , axis.text = element_text(size=10, family="LM Roman 10")
+    )
+)
+
+# load internal helpers
+
+source(file.path(file_path, "code", "R", "get_mcmc_estimates.R"))
+source(file.path(file_path, "code", "R", "transform_betabin_fit_posthoc.R"))
+
+# set seed
+this_seed <- 1234
+set.seed(this_seed)
+```
+
+# Introduction
+
+Anti-elitism is a recuring phenomenon of contemporary political discourse in many Western democracies [@oliver_rise_2016; @hobolt_fleeing_2016; @polk_explaining_2017; @engler_assessing_2019].
+While often associated with populism [@taggart_new_1996; @mudde_populism_2013],
+anti-elitism is not genuinely populist [@barr_populists_2009], and an important component of the electoral appeals of many different types of parties [@abedi_anti-political-establishment_2004; @sikk_newness_2012 ;@zulianello_anti-system_2018; @engler_survival_2018].
+
+Whereas anti-elite discourse is thus widespread, comparative research on anti-elitism in electoral competition is currently stymed by the lack of measurement instruments capable of eliciting valid measurements of partisan actors' uses of anti-elite appeals for large sets actors of partisan actors and windows of time.
+This is due to the important limitations of Existing measurement instruments that either rely on a classical content-analytical approach [e.g. @jagers_populism_2007], on expert surveys [@polk_explaining_2017], or on a computerized dictionary-based approach [e.g. @pauwels_measuring_2011-1].
+The first two methods are limited in terms of their scalability, as they presupposes the availability of suitable experts with sufficient domain-specific knolwedge and/or require rather high resource investments per measurement unit [cf. @krippendorff_content_2004, pp. 127--9].
+Dictionary-based measurement instruments of anti-elitism, in turn, exhibit questionable validity and can be considered ill-adapted to scale across political contexts [cf. @pauwels_measuring_2017; @bergman_quantitative_2018].
+
+In this paper I therefore explore the advantages and limitations of a third approach: one that combines the strengths of the content-analytical approach with the scalability advantage of crowd-sourced measurement [cf. @hua_networked_2018; @hua_measuring_2019].
+I use both real crowd-sourced as well as simulated data to assess the properties of this measurement approach.
+
+The remainder of this paper proceeds as follows.
+The next section states the goals of the analysis presented in this paper.
+Thereafter, I explain what data I use to reach these goals, and my empirical stratgy.
+Then follows a results section.
+The last section concludes.
+
+## Note on terminology
+
+Before proceeding, a brief note on terminology is due:
+*Content-analytical measurement* involves tasking humans with the judgment of texts according to a coding scheme [@krippedorff_content_2004].
+The process of applying a coding scheme to texts is referred to as *coding*.
+The humans acting as content analyists are refered to as *coders* (in the statistical learning literature, coders are also referred to as *labelers*).
+A coder's coding of text yields a *judgment*. 
+When the coding scheme is categorical, coders' judgments are also referred to as *classifications*.
+Texts constitute the level of measurement and are referred to as *instances* (a term borrowed from the statistical learning literature).
+Since instances are usually judged by multiple coders, *measurements* are obtain by aggregating coders judgments at the level of instances. 
+A measurement obtained for an instance by means of judgment aggregation is referred to as *label*; and the measurements induced by judgment aggregation as *labeling* (again borrowing from the statistical learning literature).
+*Crowd-sourcing* is the distribution of a task that requires human judgment to a large set of workers 
+Here, crowd-sourced measurement thus refers to the distribution of a content-analytical task to a large crowd of coders, who are thus referred to as *crowd coders*.
+
+# Goal statments
+
+My first goal is to quantify coders' abilities to correctly classify texts.
+It is well documented that crowd workers are noisy labelers, that is, that they tend to make more mistakes than experts or trained coders when judging data [snow_cheap_2008; sheng_get_2008; ipeirotis_repeated_2014].
+As the quality of judgments affects the quality of instance-level measurements [@dawid_maximum_1979], a first crucial step to assess the potential of a crowd-sourced measurement of anit-elitism thus is to estimate how noisy coders' judgments of elite critique are.
+
+A second aim is to asses the extent to which aggregating noisy human judgments of elite critique affects measurement quality, and how this changes as the number of judgments aggregated per instance as well as the number of coded instances is increased.
+This question arises when one considers that depending on human coders' ability to correctly judge instances of text as well as the aggregation method used to obtain measurements at the level of instances, coding error induced by noisy coders may impair measurement quality.
+In fact, the nosier coders are, the more likely they agree in error (i.e., on assigning an text the wrong label).
+Coders with poor judgment abilities thus induce high agreement-in-error rates, which, in turn, inflates conventional inter-coder agreement metrics [@passonneau_benefits_2014], and tends to impair the quality of measurements obtain by means of majority voting or averaging relative to instances' true labels [@sheng_get_2008; guan_who_2018].
+<!-- Because instances' true labels are unknown and no external gold standard exists for the data collected by HAB, I present results from a simulation study. -->
+
+A final goal is to compare how labelings induced by majority voting compares to labelings obtained by aggregating judgments using a Bayesian model that accounts for coders varying abilities.
+
+# Data and empirical strategy
+
+## Crowd-sourced codings of elite critique in textual data
+
+I analyze both real and simulated human judgments of elite critique in political texts.
+The real data was originally collected by @hua_networked_2018 [, hereafter HAB] via the crowd-sourcing platform *FigureEight*. 
+HAB have collected social media posts (instances) created by of accounts of parliamentary parties and those of their leaders in six Western European countries,
+and recruited crowd coders to judge a sample of these posts according to the following question:
+
+> Does this tweet/post criticize or mention in a negative way political leaders or parties, institutions, governments, media, academics, financial elites, etc?
+
+
+Coders were asked to answer Yes or No; all judgments obtained are thus binary.
+
+```{r load judgments data, eval = TRUE}
+# load data
+dat <- data.table::fread(file.path(file_path, "exdata", "f1317730.csv"), stringsAsFactors = FALSE) %>% 
+  tbl_df()
+
+names(dat) <- str_replace(names(dat), "^_", "f8_")
+
+```
+
+HAB have crowd-sourced judgments from `r length(unique(dat$f8_worker_id))` different coders for a set of `r length(unique(dat$f8_unit_id))` different instances.
+To control the quality of judgments, they have used 40 'gold-standard' instances [@ipeirotis_quality_2010].
+Gold-standard instances are texts for which 'true' labels are known.
+Before accepting a coder as judge in their task, HAB have require each to correctly judge at least seven out of ten gold-standard instances. 
+In addition, such screener tasks were randomly seeded among instances to continously controll judgment quality.
+This use of gold-standard instances as screeners is considered best practice [@berinsky_separating_2014, @benoit_crowd-sourced_2016].
+
+
+```{r crt judgments df}
+judgments <- dat %>% 
+  mutate(judgment = ifelse(elites == "yes", 1, -1)) %>% 
+  group_by(f8_unit_id) %>% 
+  summarize(
+    n_pos = sum(elites == "yes")
+    , n_neg = sum(elites == "no")
+    , wvote = mean(judgment*f8_trust)
+  ) %>% 
+  mutate(
+    n_judgments = n_pos + n_neg
+    , decision = paste0(n_pos, ":", n_neg)
+    , label = ifelse(wvote >= 0, "yes", "no")
+    , wvote = (wvote + 1)/2
+  ) %>% 
+  left_join(select(dat, f8_unit_id, f8_golden, elites_gold)) %>% 
+  unique()
+```
+
+
+Figure 1 shows that the number of judgments per gold-standard instance is high (it lies in the range [`r subset(judgments, elites_gold != "", n_judgments) %>% range()`]), which is due to the fact that in HAB's data there are only few gold-standard instances but that each coder is asked to judge a minimum of ten gold-standard instances.
+Although varying proportions of coders have misclassified gold-standard-instances, *FigureEight*'s weighted majority voting scheme[^f8mv] induces correct labels of all but one gold-standard instances. 
+
+[^f8mv]: On *FigureEight*, each coder is assigned a 'trust' score that is reflecting her coding quality. To obtain a labeling, a majority winner is induced using coders' trust scores as weights.
+
+```{r goldstandard_voted_labeling, eval = TRUE, fig.cap = "Labelings of gold-standard instances induced by coder-trust weighted majority voting. Plot panel columns separate instances in actual gold standard labels, i.e., in true negatives (left) and true positives (right). Vertical dashes plot on top of bars indicates decision threshold, illustrating that this aggregation method induce one false-negative labeling in gold standard items (seventh instance from left in right panel)."}
+dat %>% 
+  filter(elites_gold != "") %>% 
+  group_by(f8_unit_id, elites_gold, elites) %>% 
+  summarise(n_votes = n_distinct(f8_worker_id)) %>% 
+  group_by(f8_unit_id) %>% 
+  mutate(n_judgments = sum(n_votes)) %>% 
+  ungroup() %>% 
+  ggplot(
+    aes(
+      y = n_votes
+      , x = as.factor(f8_unit_id)
+      , fill = elites
+      , group = elites_gold
+    )
+  ) +
+    geom_bar(
+      position = "stack"
+      , stat = "identity"
+      , alpha = .75
+    ) +
+    geom_point(
+      aes(y = floor(n_judgments/2))
+      , shape = "-"
+      , size = 4
+      , alpha = .75
+      , show.legend = FALSE
+    ) + 
+    facet_grid(cols = vars(elites_gold), scales = "free_x", space = "free_x") +
+    scale_x_discrete(label = NULL) + 
+    scale_fill_manual(values = RColorBrewer::brewer.pal(3,name = "Set2")[2:1]) +
+    labs(x = NULL, y = NULL, fill = "Judgment:") +
+    theme(
+      axis.ticks.x = element_blank()
+      , panel.grid.major.x = element_blank()
+    )
+```
+
+With regard to instances that were not in the gold-standard set, Table 1 shows that each of these free instances was coded three times, resulting in different yes:no patterns.
+
+```{r inspect validation data, eval = TRUE}
+judgments %>% 
+  filter(elites_gold == "") %>% 
+  group_by(label, decision, n_judgments) %>% 
+  summarize(n = n_distinct(f8_unit_id)) %>% 
+  knitr::kable(
+    col.names = linebreak(
+      c(
+        "Label"
+        , "Decision\n(yes:no)"
+        , "Number of\njudgments"
+        , "Number of\ninstances"
+      )
+      , align = "c"
+    )
+    , format = "latex"
+    , booktabs = T
+    , linesep = ""
+    , escape = FALSE
+    , caption = "Number of instances with different number of judgments in HAB's crowd-sourced elite critique coding data."
+  ) %>% 
+  kable_styling(latex_options = "hold_position")
+```
+
+```{r tab non-gs instances, eval = FALSE}
+judgments %>% 
+  filter(elites_gold != "") %>% 
+  group_by(elites_gold, label, decision, n_judgments) %>% 
+  summarize(n = n_distinct(f8_unit_id)) %>% 
+  knitr::kable(
+    col.names = linebreak(
+      c(
+        "Gold-standard\nlabel"
+        , "Label"
+        , "Decision\n(yes:no)"
+        , "Number of\njudgments"
+        , "Number of\ninstances"
+      )
+      , align = "c"
+    )
+    , format = "latex"
+    , booktabs = T
+    , linesep = ""
+    , escape = FALSE
+    , caption = "Number of gold-standard instances with different number of judgments in HAB's crowd-sourced elite critique coding data."
+  ) %>% 
+  kable_styling(latex_options = "hold_position")
+
+```
+
+```{r crt codings data, eval = TRUE}
+codings <- dat %>% 
+  # # keep only judgments that are 'ok'
+  # filter("ok" == filter) %>%
+  # replace "" with NA in string vectors
+  mutate_if(is.character, Vectorize(function(x) if (x == "") NA_character_ else x)) %>%
+  mutate(
+    # judgment index
+    index = row_number(),
+    # instance index
+    item = group_indices(., f8_unit_id) ,
+    # coder index
+    coder = group_indices(., f8_worker_id),
+    # elite critique indiactors
+    elites = elites == "yes"
+  ) %>% 
+  tbl_df()
+
+n_judgments <- nrow(codings)
+n_coders <- length(unique(codings$coder))
+n_instances <- length(unique(codings$item))
+```
+
+
+Figure 1 and Table 1 already hint at substantial levels of disagreement among coders.
+Whereas it is common to aggregate judgments at the instance-level by means of majority voting, I additionally employ a Bayesian modeling approach here.
+This approach is motivated by the consideration that the crowd coder population is rather heterogenous in its abiltiy to correctly judge instances.
+In presence of such ability heterogeneity, majority voting can be shown to be biased relative to true labels [@sheng_get_2008; guan_who_2018].
+The Bayesian model I apply to induce instance-level labelings, in turn, estimates coders abilities and takes them into account when estimating instances' labels.
+This judgment noise-sensitive approach is expected to mitigate the bias found in majortiy-winner labelings. 
+
+## The Bayesian Beta-Binomial by Annotator model
+
+I assume that elite critique is a latent binary feature of political texts, and hence crowd coders act as human content-analysts whose judgments I want to aggregate at the instance-level to estimate whether a given instance features elite critique.
+The setup can be described as a four-tuple $\langle\mathcal{I}, \mathcal{J}, \mathcal{K}, \mathcal{Y}\rangle$, where
+
+- $\mathcal{I}$ is the set of \emph{instances} $i \in 1,\ \ldots ,\ n$ distributed for crowd coding,
+- $\mathcal{J}$ is the set of \emph{coders} $j \in 1,\ \ldots ,\ m$,
+- $\mathcal{K}$ is the set of \emph{classes} $k \in \{0, 1\}$ defined by the categorical coding scheme used during crowd-coding, and
+- $\mathcal{Y}$ is the set of \emph{judgments} $y_{i,j} \in \{0, 1\}$ recorded for instance $i$ by coder $j$.
+
+<!-- In total, we have $d = n \times m$ judgments. -->
+<!-- In the validation data, it is provided that $\mathcal{Y}$ contains at least three judgment per instance, and that some instances are judged more than once by different coders.  -->
+
+Importantly, while coders' judgments are observed, instances' true class membership (labels) $c_i \in \mathcal{K}$ are unknown *a priori* for all $i = 1,\ \ldots,\ n$.
+In this setup, an assignment of instances into classes obtained from a set of judgments $\rho(\mathcal{Y}) \Rightarrow \mathcal{C}$ is called a *labeling*.
+I obtain such labelings by fitting the following model to the judgment data:
+
+<!-- \begin{align*} -->
+<!--   c_i &\sim\ \mbox{Bernoulli}(\pi)\\ -->
+<!--   \theta_{0j} &\sim\ \mbox{Beta}(\alpha_0 , \beta_0)\\ -->
+<!--   \theta_{1j} &\sim\ \mbox{Beta}(\alpha_1 , \beta_1)\\ -->
+<!--   y_{ij} &\sim\ \mbox{Bernoulli}(c_i\theta_{1j} + (1 - c_i)(1  - \theta_{0j}))\\ -->
+<!--   {}&{}\\ -->
+<!--   \pi &\sim\ \mbox{Beta}(1,1)\\ -->
+<!--   \alpha_0/(\alpha_0 + \beta_0) &\sim\ \mbox{Beta}(1,1)\\   -->
+<!--   \alpha_0+\beta_0 &\sim\ \mbox{Pareto}(1.5)\\ -->
+<!--   \alpha_1/(\alpha_1 + \beta_1) &\sim\ \mbox{Beta}(1,1)\\  -->
+<!--   \alpha_1+\beta_1  &\sim\ \mbox{Pareto}(1.5) -->
+<!-- \end{align*} -->
+
+<!-- where  -->
+
+<!-- - $c_i$ is the 'true' (unobserved) class of statement $i$, -->
+<!-- - $\pi$ is the 'true' prevalence of the positive class, -->
+<!-- - $\theta_{0,j}$ is coder $j$'s specificity (true-negative detection rate), -->
+<!-- and -->
+<!-- - $\theta_{1,j}$ is her sensitivity (true-positive detection rate). -->
+
+\begin{model}
+\caption{Bayesian hierarchical Beta-Binomial by Annotator model}
+\label{model:bba}
+    \begin{align*}
+      c_i &\sim\ \mbox{Bernoulli}(\pi)\\
+      \theta_{0j} &\sim\ \mbox{Beta}(\alpha_0 , \beta_0)\\
+      \theta_{1j} &\sim\ \mbox{Beta}(\alpha_1 , \beta_1)\\
+      y_{ij} &\sim\ \mbox{Bernoulli}(c_i\theta_{1j} + (1 - c_i)(1  - \theta_{0j}))\\
+      {}&{}\\
+      \pi &\sim\ \mbox{Beta}(1,1)\\
+      \alpha_0/(\alpha_0 + \beta_0) &\sim\ \mbox{Beta}(1,1)\\  
+      \alpha_0+\beta_0 &\sim\ \mbox{Pareto}(1.5)\\
+      \alpha_1/(\alpha_1 + \beta_1) &\sim\ \mbox{Beta}(1,1)\\ 
+      \alpha_1+\beta_1  &\sim\ \mbox{Pareto}(1.5)
+    \end{align*}
+    \hspace*{.05\linewidth}%
+    \parbox[c]{.9\linewidth}{%
+        \footnotesize%
+        \emph{Note:} 
+        $c_i$ is the `true' (unobserved) class of instance $i$, 
+        $y_{ij}$ is coder $j$'s judgment of instance $i$,  
+        $\theta_{0j}$ is coder $j$'s specificity (true-negative detection rate),  $\theta_{1j}$ is her sensitivity (true-positive detection rate), and
+        $\pi$ is the `true' prevalence of the positive class.
+        $(\alpha_., \beta_.)$ are hyperparameters governing the distributions of coders ability parameters. 
+        The distributions of coders' abilities are parameterized in terms of the means and scales of their respective hyper-distributions and given uninformative priors.
+    }
+\end{model}
+
+
+@carpenter_multilevel_2008 refers to this model as the Beta-Binomial by Annotator
+(BBA) model.[^2]
+Without knowing instances' true classes and no prior knowledge of coders' abilities, the BBA model is perfect to scrutinize coder abilities, as it allows to estimate the sensitivities and specificities of coders who have contributed their judgments of instances' class membership.
+
+[^2]: This name is due to its property that, given a conjugate beta prior, the posterior densities of instances' class membership follow a beta-binomial distribution.
+
+
+# Evidence of crowd coders varying abilities in classifying elite critique
+
+## Estimation 
+
+```{r get elite codings, eval = TRUE}
+# subset codings
+elite_codings <- codings %>%
+  mutate(judgment = as.integer(elites)) %>% 
+  filter(!is.na(judgment)) %>% 
+  select(index, item, coder, judgment) 
+```
+
+In order to asses coders true-positive and true-negative detection rates in elite critique codings, 
+I fit a BBA model to HAB's crowd-sourced codings data using an implementation in JAGS [@plummer_jags_2003].
+Specifically, I first updated the model with 5000 burn-in iterations, and then obtain MCMC estimates for three chains of 10\,000 iterations each, and only every 10th iteration was retained to mitigate within-chain auto-correlation in estimates.[^3]
+
+[^3]: These choices are based on inspecting convergence and auto-correlation in initial models with fewer iterations and less (or no) thinning. Using these fitting parameters yields a shrinkage factor that is sharply declining within the first post-burn-in iterations and then is very close to 1. Moreover, with the thinning parameter set to 10, auto-correlation in posterior estimates is negligible.
+
+```{r fit anti-elitism, eval = FALSE}
+# initialize model
+elite_mcmc_model <- jags.model(
+  file = model_file_path
+  , data = get_codings_data(elite_codings)
+  , inits = init_vals
+  , n.chains = n_chains
+)
+
+update(elite_mcmc_model, 5000)
+
+elite_mcmc_fit <- coda.samples(
+  elite_mcmc_model
+  , variable.names = c(
+    "deviance"
+    , "pi"
+    , "c"
+    , "theta0", "theta1"
+    , "alpha0", "beta0"
+    , "alpha1", "beta1"
+  )
+  , n.iter = 15000
+  , thin = 15
+)
+
+fits$elite_mcmc_fit <- elite_mcmc_fit
+```
+
+```{r load anti-elite fit, eval = TRUE, include = FALSE}
+fits <- readRDS(file.path(file_path, "fits", "betabinom_by_annotator_allf8.RData"))
+elite_mcmc_fit <-  fits[[1]]
+```
+
+All priors were chosen to be uninformative, reflecting a situation where we have no domain-specific prior knowledge about instances classes, coders' abilities, and positive class prevalence.
+Because of the abundance of parameters of the BBA model ($2 \times J$ ability parameters, $I$ instance class estimates, and prevalence and  hyperparameter estimates),
+I used the Deviance Information Criterion to judge model convergence, and find the model to be well-converged and that chains are well-mixed.
+
+## Assessing coder ability estimates
+
+
+```{r trans elite_mcmc_fit}
+elite_mcmc_fit_t <- transform_betabin_fit_posthoc(elite_mcmc_fit)
+```
+
+```{r thetas_ae_densities, eval = FALSE, fig.width=6.5, fig.cap="Posterior densities of coders' abilities for anti-elitism labeling. $\\theta_0$ and $\\theta_1$ refer to specificity and sensitivity, respectively. Estimates obtained from three MCMC chains of 10K iterations each, retaining only every 10th estimate."}
+elite_post_thetas <- get_mcmc_estimates(elite_mcmc_fit_t, "theta\\d\\[\\d+\\]")
+
+elite_post_thetas %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = gsub("\\]$", "", coder)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
+  ggplot(
+    aes(
+      y = factor(coder, levels = 1:length(unique(.$coder)))
+      , x = est
+      , group = coder
+    )
+  ) +
+  geom_density_ridges(
+    color = NA
+    , scale = 1
+  ) +
+  scale_x_continuous(limits = c(0,1))+
+  facet_grid(
+    rows = vars(parameter)
+    , labeller = label_parsed
+    , switch = "y"
+  ) + 
+  labs(x = NULL, y = NULL) +
+  coord_flip() +
+  theme(
+    strip.text.y = element_text(angle = 180)
+    , plot.caption = element_text(hjust = 0)
+  )
+```
+
+```{r get post thetats}
+elite_post_thetas <- get_mcmc_estimates(elite_mcmc_fit_t, "theta\\d\\[\\d+\\]")
+
+elite_post_thetas_sum <- elite_post_thetas %>% 
+  group_by(parameter) %>% 
+  summarise(
+    mean = mean(est)
+    , q05 = quantile(est, .05)
+    , q95 = quantile(est, .95)
+  ) %>% 
+  mutate(
+    coder = as.integer(gsub(".+\\[(\\d+)\\]$", "\\1", parameter))
+    , parameter = gsub("^theta(\\d).+$", "theta[\\1]", parameter, perl = TRUE)
+  ) 
+```
+
+```{r thetas_ae_intervals_apx, eval = FALSE, fig.width=6, fig.height=8, fig.cap="Mean posterior estimates and 90\\% credibility intervals of coders' abilities for anti-elitism labeling. $\\theta_0$ and $\\theta_1$ refer to specificity and sensitivity, respectively. Estimates obtained from three MCMC chains of 10K iterations each, retaining only every 10th estimate."}
+
+elite_post_thetas_sum %>% 
+  ggplot(
+    aes(
+      x = mean, xmin = q05, xmax = q95,
+      y = coder
+    )
+  ) +
+    geom_errorbarh(height = 0, size = .25) +
+    geom_point(size = .5) +
+    facet_grid(~parameter, labeller = label_parsed) + 
+    scale_y_discrete(
+      limits = range(elite_post_thetas_sum$coder) + c(-10, 10)
+        , labels = NULL
+    ) + 
+    labs(x = "Posterior estimate", y = NULL) + 
+    theme(
+      axis.ticks.y = element_blank()
+      , panel.grid.major.y = element_blank()
+      , panel.grid.minor.y = element_blank()
+    )
+```
+
+Figure 2 plots posterior mean estimates of coders' sensitivity and specificity parameter estimates (Figure X in the Appendix reports mean estimates and 90% credibility intervals).
+Sensitivity refers to true-positive detection rate, that is, a coder's ability to correctly judge an instance that truely features elite critique.
+Conversely, specificity refers to true-negative detection rate, that is, a coder's ability to correctly judge an instance that truely features *no* elite critique.
+
+```{r thetas_ae_scatter, fig.height=5, fig.width=5, fig.cap="Mean posterior estimates of coders' abilities for elite critique classification. $\\theta_0$ and $\\theta_1$ refer to specificity  and sensitivity, respectively."}
+
+elite_post_thetas_sumstats <- elite_post_thetas_sum %>% 
+  {right_join(
+    filter(., parameter == "theta[0]") %>% 
+      rename_at(2:4, paste0, "_theta0") %>% 
+      select(-parameter)
+    , filter(., parameter == "theta[1]") %>% 
+      rename_at(2:4, paste0, "_theta1") %>% 
+      select(-parameter)
+    , by = "coder"
+  )} 
+
+thetas_ae_scatter <- elite_post_thetas_sumstats %>% 
+  ggplot(
+    aes(
+      x = mean_theta0,
+      y = mean_theta1,
+      group = coder, 
+      alpha = .5
+    )
+  ) +
+    geom_point() +
+    scale_x_continuous(limits = 0:1) +
+    scale_y_continuous(limits = 0:1) +
+    guides(alpha = FALSE) +
+    labs(
+      x = expression(theta[0])
+      , y = expression(theta[1])
+    ) +
+    theme(
+      axis.title.y = element_text(angle = 0, vjust = .5)
+    )
+
+thetas_ae_theta0_hist <- elite_post_thetas_sumstats %>% 
+  ggplot(aes(x = mean_theta0)) +
+    geom_density(aes(y=..density..), color = NA, fill = "grey") + 
+    geom_histogram(aes(y=..density..), color = "black", fill = NA, alpha = .5) +
+    scale_x_continuous(labels = NULL, limits = 0:1) +
+    labs(x = NULL, y = NULL) +
+    labs(y = "Density")
+
+thetas_ae_theta1_hist <- elite_post_thetas_sumstats %>% 
+  ggplot(aes(x = mean_theta1)) +
+    geom_density(aes(y=..density..), color = NA, fill = "grey") + 
+    geom_histogram(aes(y=..density..), color = "black", fill = NA, alpha = .5) +
+    scale_x_continuous(labels = NULL, limits = 0:1) +
+    labs(x = NULL, y = NULL) + 
+    labs(y = "Density") + 
+    coord_flip()
+
+
+g_tl <- ggplot2::ggplotGrob(thetas_ae_theta0_hist)
+g_bl <- ggplot2::ggplotGrob(thetas_ae_scatter)
+g_br <- ggplot2::ggplotGrob(thetas_ae_theta1_hist)
+ws <- grid::rectGrob(gp = grid::gpar(fill = NA, col = NA) )
+
+g_tl$widths <- g_bl$widths
+g_br$heights <- g_bl$heights 
+
+ws$width <- g_br$widths
+ws$height <- g_tl$heights
+
+g <- gtable::gtable_matrix(
+  name = "demo"
+  , grobs = matrix(list(g_tl, g_bl, ws, g_br), nrow = 2) 
+  , widths = grid::unit(c(4, 1), "in") 
+  , heights = grid::unit(c(1, 4), "in")
+)
+grid.newpage()
+grid.draw(g)
+```
+
+Coders are found to perform generally very well in detection true negative instance (i.e., texts featuring no elite critique), while the recruited coders are more heterogeneous with regard to their ability to correctly judge positive instance.
+Importantly, there are not only coders that perform only moderately (those with mean sensitivity estimates in the range $[.5, .7]$), but also some adversarial coders with substantial posterior density mass below .5.
+
+Inspecting the distribution of coders' mean posterior ability estimates (marginal distributions 2), we can conclude that coders are overall better in correctly judging texts featuring no elite critique than they are in judging those that feature elite critique.
+
+```{r plot_distr_thetas_anti-elitism, eval = FALSE, fig.cap="Distribution of mean posterior ability parameters in elite critique classification. Means computed at level of coders by aggregating estimates across iterations and chains. $\\bar{\\theta}_0$ and $\\bar{\\theta}_1$ refer to mean specificity and sensitivity, respectively."}
+elite_post_thetas %>%
+  group_by(parameter) %>%
+  summarize(est = mean(est)) %>%
+  mutate(param = if_else(grepl("^theta0", parameter), "bar(theta)[0]", "bar(theta)[1]")) %>%
+  ggplot(aes(x = est)) +
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  facet_grid(cols = vars(param), labeller = label_parsed) +
+  labs(x = NULL, y = NULL)
+```
+
+```{r inspect_hyperpars_anti-elitism, fig.cap="Posterior estimates of hyperparamters of ability distribtions in elite critique classification. Hyperdistribution parameters reported in terms of their means, $\\alpha/(\\alpha+\\beta)$, and their invers squared scales, $1/(\\alpha+\\beta)^2$."}
+elite_post_hyperpars <- get_mcmc_estimates(elite_mcmc_fit_t, "^(alpha|beta)(0|1)$")
+
+elite_post_hyperpars %>%
+  mutate(
+    param = sub(".+(\\d)$", "theta[\\1]", parameter)
+    , parameter = sub("\\d$", "", parameter)
+  ) %>%
+  spread(parameter, est) %>%
+  mutate(
+    iqscale = 1/(alpha + beta)^2
+    , mean = alpha/(alpha + beta)
+  ) %>%
+  ggplot(aes(x = mean, y = iqscale)) +
+    geom_point(alpha = .5, size = .5) +
+    # scale_x_continuous(breaks = seq(.6,1,.1)) +
+    # scale_y_continuous(breaks = seq(0, 50, 10)) +
+    facet_grid(~param, labeller = label_parsed) +
+    labs(
+      x = expression(alpha[.]/(alpha[.]+beta[.]))
+      , y = expression(1/(alpha[.]+beta[.])^2)
+    )
+```
+
+When looking at the distributions of mean posterior hyper-parameters estimates of sensitivity and specificity distributions in Figure 4,
+we see that this larger variation in mean sensitivity estimates in recruited coders abilities' shapes our posterior belief about the coder population at large: we are much more uncertain about the mean of the sensitivity distribution than about that of the specificity distribution (indicated by larger horizontal spread).
+Similarly, the precision of our belief in the coder population's sensitivity is lower than it is for specificity (indicated by the larger vertical spread).
+
+```{r inspect hyperpars anti-elitism 2, eval = FALSE}
+elite_post_hyperpars_sum <- elite_post_hyperpars %>%
+  group_by(parameter) %>%
+  # summarise(mean = mean(est)) %>%
+  summarise(
+    `'10%'` = quantile(est, .1)
+    , `'25%'` = quantile(est, .25)
+    , `'50%'` = quantile(est, .5)
+    , `'75%'` = quantile(est, .75)
+    , `'90%'` = quantile(est, .90)
+  ) %>%
+  mutate(shapes = sprintf("$\\theta_%s$", sub(".*(\\d)$", "\\1", parameter))) %>%
+  gather(stat, val, -parameter, -shapes) %>%
+  spread(parameter, val) %>%
+  unite(param, -shapes, -stat) %>%
+  mutate(
+    param = gsub("NA", "", param)
+    , param = gsub("^_|_$", "", param)
+  ) %>%
+  separate(param, c("alpha", "beta"), sep = "_+") %>%
+  mutate_at(3:4, as.numeric)
+
+elite_post_hyperpars_sum %>%
+  mutate(
+    prop_advers = pbeta(.5, shape1 = alpha, shape2 = beta)
+    , prop_leq.75 = pbeta(.75, shape1 = alpha, shape2 = beta)
+  ) %>%
+  select(-alpha, -beta)
+```
+
+
+# Classification performance of model-based labeling
+
+In order to assess how model-based labeling performs relative to instances' true labels, but  true labels in HAB's data are knonw only for 40 out of total `r n_instances`, I use apply a simulation approach.
+Spercifically, I simulated judgments according to the data generating process captured by Model 1. 
+
+```{r sim setup, eval = TRUE}
+
+# define parameters to estimate
+model_parameters <- c(
+    "deviance" # Deviance Information Criterion (DIC)
+    , "pi" # Prevalence of positive class
+    , "c" # instance classes
+    , "theta0", "theta1" # coder specificities and sensitivities, respectively
+    , "alpha0", "beta0" # shape parameters of coders' specificity hyperdistribution
+    , "alpha1", "beta1" # shape parameters of coders' sensitivity hyperdistribution
+  )
+
+# read data and fitted objects from disk
+
+sim_fitted <- readRDS(file.path(file_path, "fits", "sim_antielite_allf8_vary_n_and_n_i.RData"))
+sim_post_ests <- readRDS(file.path(file_path, "data", "post_est_antielite_allf8_vary_n_and_n_i.RData"))
+```
+
+## Simulation parameters
+
+The true prevalence $\pi$ has been simulated at `r sim_fitted$elite$sim_params$pi`, the mean posterior estimate in the elite critique codings data analyzed in the previous section.
+Coders' ability parameters were drawn from the Beta-distributions displayed in Figure 5.
+
+```{r plot_annotator_parameter_PDFs, fig.cap="Densities of coder ability hyperdistribtions. $\\theta_0$ and $\\theta_1$ refer to specificity and sensitivity, respectively"}
+
+# sampling distribution annotator-specific parameters
+pdf_theta0 <- function(x) dbeta(x, sim_fitted$elite$sim_params$alpha0, sim_fitted$elite$sim_params$beta0)
+pdf_theta1 <- function(x) dbeta(x, sim_fitted$elite$sim_params$alpha1, sim_fitted$elite$sim_params$beta1)
+
+param_grid <- expand.grid(x = seq(0,1,.05), param = c("theta[0]", "theta[1]"))
+
+ggplot(mapping = aes(x)) +
+  stat_function(data = filter(param_grid, param == "theta[0]"), fun=pdf_theta0) +
+  stat_function(data = filter(param_grid, param == "theta[1]"), fun=pdf_theta1) +
+  facet_grid(~param, labeller = label_parsed) +
+  labs(y = NULL, x = NULL)
+```
+
+From these specificity and sensitivity distributions, tuples of ability parameters were randomly drawn for 40 coders.
+The empirical distribution of coders' simulated abilities is shown in Figure 6.
+
+```{r plot_sim_thetas, fig.height = 3, fig.width = 3, fig.cap="Distribution of coders' simulated ability parameters. $\\theta_{0.}$ and $\\theta_{1.}$ refer to specificity and sensitivity, respectively"}
+tibble(
+  theta0 = sim_fitted$elite$sim_params$theta0
+  , theta1 = sim_fitted$elite$sim_params$theta1
+) %>%
+  ggplot(aes(x = theta0, y = theta1)) +
+    geom_vline(aes(xintercept = median(theta0)), color = "grey") +
+    geom_hline(aes(yintercept = median(theta1)), color = "grey") +
+    geom_point(alpha = .5) +
+    scale_x_continuous(limits = 0:1) +
+    scale_y_continuous(limits = 0:1) +
+    labs(
+      x = expression(theta[0*.])
+      , y = expression(theta[1*.])
+    ) +
+    theme(
+      axis.title.y = element_text(angle = 0, vjust = .5)
+    )
+```
+
+In total, I have randomly sampled 500 instances from a Bernoulli distribution with the simulated $\pi$ value of `r sim_fitted$elite$sim_params$pi`.
+Given a missingness rate of .75 (i.e., each instance was judged by only 10 out of total 40 coders), I have then generated total 10 judgments for each of these instances.
+In order to examine how model-based labelings of instances perform as a function of the total number of instances coded, $n$,
+I have then split from the entire 500 instances blocks of $n \in \{200, 250,\,\ldots, 500\}$ instances, such that instances in smaller sized blocks are nested in respective larger sized blocks (i.e., all instances in block 200 are also in the 250 block, etc.).
+This is thought to imitate the situation where we collect increasing amounts of judgments for new instances.
+
+In order to examine how repeated judgment of instances affects model-based labeling quality (i.e., increasing the number of judgments aggregated per coding, $n_i$), I have sampled different numbers of judgments for each instance, such that $n_i \in \{3, 4,\,\ldots, 10\}$.
+Again, I have applied a nesting logic when splitting the entire judgments dataset.
+That is, for a given instance, all judgements that are in the $n_i = 3$ subset are also in the $n_i = 4, ..., 10$ subsets, etc.
+Mirroring the logic of fitting BBA models to differently $n$-sized but nested codings datasets, this simulation strategy mimics a situation where one collects increasing numbers of repeated judgments from *different* coders for a given instance.
+
+## Estimation
+
+I fitted a BBA model to each $n\times n_i$ dataset.[^4]
+I kept uninformative priors for coders ability parameters and ability distributions' hyper-parameters, but specified a more informative prior for the positive class prevalence, $\pi \sim \text{Beta}(2, 8)$.
+The latter choice was thought to reflect, where results from an early analysis suggest that the prevalence lies in the range [`r c(pbeta(.05, 2, 8), qbeta(.95, 2, 8))`] with 90% confidence.
+Moreover, I constrained coder ability estimates to lie in the range [0.0001, 0.9999], since otherwise the slicer of the JAGS' MCMC algorithm would get stuck in infinite density regions.
+<!-- Plots of the DIC values of each model can be found in the Appendix. -->
+
+[^4]: Because depending on $n$ and $n_i$, convergence was achieved after varying numbers of iterations, and models also exhibited different levels of auto-correlation in chains, I ran the models with different burn-in and thinning configurations that are reported in Tables 4 and 5 the Appendix. However, the number of retained iterations was always adapted to the thinning parameter so that for each model 1000 estimates were obtained for each of three chains.
+
+## Labeling quality of posterior classifications
+
+```{r get_c_posteriors}
+elite_cs <- sim_post_ests$c
+```
+
+For each model, I induced posterior labelings by assigning instances to the positive and negative classes according to whether their mean posterior class estimate $c_i$ is > .5 (equivalent to assigning the mode posterior class estimate, i.e., majority voting, in binary classification).
+
+### Posterior classification uncertainty
+
+A point of concern that pertains to labeling quality is how certain we are about these posterior-estimate based assignments of instances into classes.
+To assess this question, I define *posterior classification uncertainty* (PCU) as the standard deviation in an instance $i$'s label posterior estimates $\mathbf c_i = (c_{i1}, \ldots, c_{iT})$ across chains and iterations:
+\[
+  \text{SD}(\mathbf c_i) = \sqrt\frac{\sum_{t=1}^T (c_{it} - \bar{c}_i)^2}{T-1},
+\]
+where $t$ indexes the $t^{th}$ estimate, and here $T = 1000 \times 3$ (iterations times chains).
+The theoretical maximum of PCU is reached if an instance is estimated to be a member of the positive class exactly  $T/2$ times, and this maximum approaches .5 as $T \to \infty$.
+
+```{r compute_sim_pcu}
+elite_pcus <- elite_cs %>%
+  group_by(sample_size, n_i, parameter) %>%
+  summarise(pcu = sd(est))
+
+elite_pcu_sum <- elite_pcus %>%
+  group_by(sample_size, n_i) %>%
+  summarise(
+    mean_pcu = mean(pcu)
+    , sd_pcu = sd(pcu)
+    , lwr_pcu = quantile(pcu, .05)
+    , upr_pcu = quantile(pcu, .95)
+  )
+```
+
+The distributions of PCUs for different values of $n$ and $n_i$ (Figure 7) illustrates that posterior classifications are comparatively uncertain if we aggregate only few judgments per instance.
+As $n_i$ is increased, however, the PCU of most instances is reduced substantially, and in the extreme case of $n_i = 10$ is reduced to negligible levels in virtually all instances
+We can also see that increasing $n$ contributes only little to change this pattern.
+
+```{r sim_pcu_distributions, fig.height = 6, fig.cap="Distributions of posterior classification uncertainty by $n$ and $n_i$. Results obtained by fitting BBA model to simulated elite critique judgments."}
+p_elite_pcu_distr <- elite_pcu_sum %>%
+  ggplot() +
+  geom_violin(
+    data = elite_pcus
+    , mapping = aes(x = n_i, y = pcu, group = n_i)
+    , color = NA, fill = "grey", alpha = .75
+  ) +
+  geom_point(aes(x = n_i, y = mean_pcu), size = .5) +
+  geom_linerange(aes(x = n_i, ymin = lwr_pcu, ymax = upr_pcu), size = .25) +
+  scale_x_continuous(breaks = 3:10) +
+  facet_grid(rows = vars(sample_size), switch = "y") +
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_pcu_distr +
+  labs(
+    x = expression(paste("Number of judgments aggregated per instance, ", n[i]))
+    , y = expression(paste("Posterior classification uncertainty, ", SD(c[i])))
+  )
+```
+
+These results are summarized in Figure 8 that plots the change in mean PCU and the standard deviation in PCUs for different combinations of $n$ and $n_i$.
+While we see now more clearly that differences in $n$ make no significant difference---neither for changes in the mean PCU (left-hand panel), nor in the standard deviation of PCUs (right-hand panel)---, for all values of $n$ there occurs some reduction in mean PCU values as $n_i$ is increased.
+Similarly, The standard deviation in PCUs is lower for higher values of $n_i$.
+Taken together, we thus see that both average PCU values and their variability decreases as $n_i$ is increased.
+
+```{r plot_pcu_sumstats, fig.cap="Change in posterior classification uncertainty. Results obtained by fitting BBA model to simulated elite critique judgments."}
+p_elite_pcu_avgs <- elite_pcu_sum %>%
+  select(-lwr_pcu, -upr_pcu) %>%
+  gather(stat, val, -sample_size, -n_i) %>%
+  mutate(stat = case_when(
+    stat == "mean_pcu" ~ "Average posterior classification uncertainty"
+    , stat == "sd_pcu" ~ "Std. dev. in posterior classification uncertainty"
+    , TRUE ~ NA_character_
+  )) %>%
+  ggplot(
+    aes(
+      x = n_i
+      , y = val
+      , color = factor(sample_size)
+      , group = sample_size
+      , alpha = .75
+    )
+  ) +
+    scale_x_continuous(breaks = 3:10) +
+    geom_line() +
+    geom_point(size = 3.5, color = "white", alpha = 1) +
+    geom_point(size = 3, shape = 1) +
+    geom_point(size = 1) +
+    facet_grid(~stat) +
+    guides(
+      alpha = FALSE,
+      colour = guide_legend(nrow = 1)
+    )
+
+p_elite_pcu_avgs +
+  labs(
+    x = expression(paste("Number of judgments aggregated per instance, ", n[i]))
+    , y = NULL
+    , color = "Number of coded instances:"
+  )
+```
+
+Figure 9 says little about the significance of the reductions in mean PCUs, however.
+Therefore, Table 6 in the Appendix reports the proportion of instances whose PCU is *increased* if aggregating $n_i + l$ instead of $n_i$ judgments for $l \in (1, \ldots, 7)$ (displayed in columns 3--9).
+The proportion of instances with positive PCU change from $n_i$ to $n_i + l$ can be interpreted as a significance test: if less than 5% of instances see increase, we are 95% confident that the change in PCU induced by collecting and aggregating an additional $l$ judgments leads to an average decrease in PCUs.
+Indeed, adding just one or two more judgments per instance leads to an average decrease in instance-level PCUs in more than 95% of instances for most values of $n_i$.
+This changes little as $n$ is increased.
+In order to reduce average PCU levels, it thus seems advisable in most cases to collect multiple judgments per instance (i.e., increase $n_i$) rather than judgments for new instances (i.e., increase $n$).
+
+
+### Posterior classification performance
+
+In order to assess models' classification performance,
+I have first obtained instances' true class labels from the simulated judgments dataset.
+Next, I have compared model-based labelings of instances for each value of $n$, $n[i]$, each chain, and each iteration to instances' true class labels.
+Using this data, I have then computed statistics (mean, and 5% and 95% percentiles) of performance measures across chains and iterations for each combination of $n$ and $n_i$.
+Figure 9 visualizes these statistics for different classification performance metrics.
+(Note the scaling of the y-axis.)
+
+```{r compute_class_performance}
+elite_postclass_quality <- sim_fitted$elite$fitted[[7]][[8]]$data %>%
+  select(item, true_class) %>%
+  unique() %>%
+  mutate(parameter = sprintf("c[%s]", item)) %>%
+  right_join(elite_cs) %>%
+  group_by(sample_size, n_i, chain, iter) %>%
+  summarise(
+    n_judgments = n_distinct(item)
+    , Accuracy = sum(est == true_class)/n_distinct(item)
+    , tp = sum(est == 1 & true_class == 1)
+    , fn = sum(est == 0 & true_class == 1)
+    , fp = sum(est == 1 & true_class == 0)
+    , tn = sum(est == 0 & true_class == 0)
+    , TPR = tp / (tp + fn)
+    , TNR = tn / (tn + fp)
+    , FPR = fp / (tn + fp)
+    , FNR = fn / (tp + fn)
+    , Precision = tp / (tp + fp)
+    , Recall = TPR
+    , `F1-score` = 2*((Precision*Recall)/(Precision + Recall))
+  ) %>%
+  ungroup()
+
+elite_postclass_quality <- sim_post_ests$postclass_quality
+
+get_q05 <- function(x, na.rm) quantile(x, .05, na.rm = na.rm)
+get_q95 <- function(x, na.rm) quantile(x, .95, na.rm = na.rm)
+
+elite_postclass_quality_sum <- elite_postclass_quality %>%
+  group_by(sample_size, n_i) %>%
+  summarise_at(
+    vars(Accuracy, ends_with("R", ignore.case = FALSE), Precision, Recall, `F1-score`)
+    , funs(mean, sd, q05 = get_q05, q95 = get_q95, .args = list(na.rm = TRUE))
+  )  %>%
+  gather(metric, value, -sample_size, -n_i) %>%
+  separate(metric, c("metric", "statistic"), sep = "_") %>%
+  spread(statistic, value)
+```
+
+
+```{r sim_post_classification_performance, fig.height = 6, fig.cap="Mean and 90\\%-CIs of performance metrics by $n$ and $n_i$. Results obtained by fitting BBA model to simulated elite critique judgments. Classifications induced by assigning instances' their posterior mode class, and comparing model-based classifications to simulated true values."}
+
+these_metrics <- c(
+  "Accuracy"
+  , "TNR"
+  # , "TPR"
+  , "Precision"
+  , "Recall"
+  , "F1-score"
+)
+
+p_elite_postclass_quality_sum <- elite_postclass_quality_sum %>%
+  filter(metric %in% these_metrics) %>%
+  ggplot() +
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(metric)
+    , scales = "free_x"
+    , switch = "y"
+  ) +
+  geom_point(aes(x = n_i, y = mean), size = .5) +
+  geom_linerange(aes(x = n_i, ymin = q05, ymax = q95), size = .2) +
+  scale_x_continuous(breaks = 3:10, minor_breaks = NULL, limits = c(2.7, 10.3)) +
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_postclass_quality_sum +
+  labs(y = NULL, x = expression(paste("Number of judgments aggregated per instance, ", n[i])))
+```
+
+Figure 9 allows the following conclusions.
+*Accuracy*, defined as the proportion of correctly classified instances, increases as $n_i$ is increased.
+There exist no substantial accuracy differentials across values of $n$, however.
+(Only 90%-CIs get tighter as $n$ is increased.)
+*Recall* (also: true-positive rate, *TPR*), defined as the number of true-positive classifications over the sum of true-positive and false-negative classifications (i.e., over the number of all positive instances), exhibits much more variability across values of $n_i$.
+Similarly, *precision*, defined as the number of true-positive classifications over the sum of all positive classification (incl. false-positives), is relatively low for low $n_i$, but increases quiet rapidly as $n_i$ is increased.
+The CIs for precision estimates are comparatively wide, however.
+
+In contrast, *TNR*, the true-negative rate defined as the number of true-negative classifications over the number of all negative instances, is very high already for low values of $n_i$, and thus we observe no substantial improvements in the negative detection rates of models as the number of judgments aggregated per instance is increased.
+This is due to the fact that with a low positive instance prevalence, our simulated coders judge in expectation true negative instances about four to five times more than positive instance.
+There is thus more data and hence higher precision in negative detection.
+
+Finally, the *F1-score* that combines recall and precision into one metric[^f1] increases significantly as $n_i$ is increased.
+This is because in the denominator low precision depresses the F1-score.
+Note that the choice to report F1-scores is motivated by the presence of strong class imbalance.
+In presence of class imbalance, the accuracy is not a good performance criterion, since accuracy of about $1-\pi$ can be achieved by simply assigning each instance the majority class label.
+As the F1-score takes both precision and recall into account, we can achieve high F1-scores only if our aggregation method performs also reasonable well in correctly classifying true-positive instances.
+
+[^f1]: The formula is $\text{F1-score} = 2\times\frac{\text{Precision}\times \text{Recall}}{\text{Precision} + \text{Recall}}$
+
+Table 7 in the Appendix reports F1-score changes as $n_i$ is increased by $l$.
+It reports the proportion of iterations across chains for which an increase from $n_i$ to $n_i+l$ judgments per instance induces a decrease in the F1-score.
+Again, this can be interpreted as a significance test with a a simple logic: as we want to see F1-score increases as $l$ is increased, the smaller the proportion with a F1-score reduction, the better.
+Analyzing F1-score changes shows that while it is not possible to assert significant F1-score improvements for higher-values of $n_i$ in models fitted to small-$n$ subsets (due to smaller sample sizes and hence less power), we have reason to be confident that increasing the number of judgments if we have collect only few judgments so far usually leads to improvements in the models classification performance.
+
+<!-- Another approach to visualizing posterior classification performance follows @carpenter_multilevel_2008 and plots the (absolute) residual classification error for instances differentiating between true-positive and true-negative instances. -->
+<!-- Absolute residual classification error (ARCE) is computed as $|\text{true class} - \text{mean posterior estimate}|$ and plotted in Figure 11. -->
+
+```{r sim_abs_residuals_by_class, eval=FALSE, fig.height = 7.5, fig.width = 6.5, fig.cap="Histograms of magnitude of absolute residual errors in posterior classifcations by class. Absolute residual classification error is computed as $|\\text{true class} - \\text{mean posterior estimate}|$. Grey vertical line cutting the x-axis at .5 indicates classification threshold: instances with absoult residual error > .5 are misclassified. Results obtained by fitting BBA model to simulated elite critique judgments."}
+elite_post_classes <- elite_cs %>%
+  group_by(sample_size, n_i, parameter) %>%
+  summarise(post_class = mean(est))
+
+elite_classes <- sim_fitted$elite$fitted[[7]][[8]]$data %>%
+  select(item, true_class) %>%
+  unique() %>%
+  mutate(parameter = sprintf("c[%s]", item)) %>%
+  right_join(elite_post_classes)
+
+
+p_elite_residuals_by_class <- elite_classes %>%
+  mutate(
+    rce = case_when(
+      true_class == 0 ~ post_class
+      , true_class == 1 ~ (1-post_class)
+      , TRUE ~ NA_real_
+    )
+  ) %>%
+  ggplot(aes(x = rce, fill = factor(true_class, labels = c("no", "yes")), group = true_class)) +
+    geom_vline(
+      aes(xintercept = .5)
+      , linetype = "dashed"
+      , color = "darkgrey"
+      , size = .5
+    ) +
+    geom_histogram(
+      aes(y = stat(width*density))
+      , position="identity"
+      , bins = 25
+      , alpha = .5
+    ) +
+    scale_y_continuous(
+      labels = scales::percent_format()
+    ) +
+    scale_x_continuous(breaks = c(0,.5)) +
+    scale_fill_manual(values = RColorBrewer::brewer.pal(3,name = "Set2")[2:1]) +
+    facet_grid(
+      # sample_size~n_i+true_class
+      rows = vars(sample_size)
+      , cols = vars(n_i)
+      , scale = "free_y"
+      , switch = "y"
+    ) +
+    theme(strip.text.y = element_text(angle = 180))
+
+
+p_elite_residuals_by_class +
+    labs(
+      x = "Absolute residual classification error"
+      , y = NULL
+      , fill = "True class:"
+    )
+```
+
+<!-- Again, we can see that posterior mean estimates perform comparatively poorly in correctly classifying true positives. -->
+<!-- While most true-negative instances have low ARCE and are hence correctly classified (correct classification for ARCE $\leq$ .5), true-positive instances are sometimes misclassified, especially for low values of $n_i$ (some true-positive instances have ARCE > .5). -->
+<!-- This reflect the generally high levels of true-negative detection ability of models across values of $n$ and $n_i$, in contrast to the comparatively low true-positive detection ability (recall). -->
+<!-- Yet, though misclassification occurs more often for true-positive instances, the confidence in these instances' classifications is limited (most ACREs are close tot the classification threshold of .5). -->
+<!-- What is more, this proportion is reduced as $n_i$ is increased, as most absolute residual values approach zero or at least get lower than .5. -->
+
+<!-- Because the above plot reports proportions across the ACRE-value range that were computed within instance classes (for each $n$--$n_i$ combination), the total proportions are eclipsed, however. -->
+<!-- Indeed, as positive instances are in the minority in the simulated data, the amount of misclassification resulting from poor true-positive detection rates is actually not too grave. -->
+<!-- This is illustrated by Figure 12 that depicts real-valued (not absolute) residual classification error values. -->
+
+```{r sim_residuals, eval=FALSE, fig.pos = "", fig.height = 7.5, fig.width = 6.5, fig.cap="Histograms of magnitude of residual errors in posterior classifcations. Residual classification error is computed as $\\text{true class} - \\text{mean posterior estimate}$. Grey vertical lines cutting the x-axis at -.5 and .5, respectively, indicate classification thresholds: instances with residual error < -.5 and > .5 are misclassified. Results obtained by fitting BBA model to simulated elite critique judgments."}
+p_elite_residuals <- elite_classes %>%
+  mutate(rce = true_class - post_class) %>%
+  ggplot(aes(x = rce)) +
+    geom_vline(
+      xintercept = c(-.5,.5)
+      , linetype = "dashed"
+      , color = "darkgrey"
+      , size = .5
+    ) +
+    geom_histogram(
+      aes(y = stat(width*density))
+      , position="identity"
+      , alpha = .75
+    ) +
+    scale_y_continuous(
+      labels = scales::percent_format()
+    ) +
+    scale_x_continuous(breaks = c(-.5,.5)) +
+    facet_grid(
+      rows = vars(sample_size)
+      , cols = vars(n_i)
+      , scale = "free_y"
+      , switch = "y"
+    ) + 
+    theme(strip.text.y = element_text(angle = 180))
+
+p_elite_residuals +
+  labs(y = NULL, x = "Residual classification error")
+```
+
+<!-- In this Figure, negative residuals measure how much an instance's *mean* posterior class estimate (averaged across chains an iterations) deviates from the true label (negative and positive labels represented as 0 and 1, respectively). -->
+<!-- That is, residuals in model-based classification of true-positive instances are negative in [-1, 0), whereas residuals in resulting from model-based classification of true-negative instances are always positive in (0, 1] . -->
+<!-- Actual misclassification of true-positives (true-negatives) occurs only if the residual is smaller (greater) than -.5 (.5)---hence the two vertical dashed lines at -.5 and .5. -->
+<!-- Indeed, because for each true-positive instance there are about 9 true-negatives, misclassification of true-negative instances occurs more often in absolute terms, whereas in relative terms models' true-negative detection abilities (TNR) tends to be better than their true-positive detection ability (recall). -->
+
+### Comparison to majority-voting based classifications
+
+A final goal of this analysis is to compare the classification performances of BBA models to those induced by majority voting.
+Table 2 shows that majority-voting induced and model-based labelings correlated rather strongly.
+
+```{r compute disagreement}
+elite_voted <- map_df(sim_fitted$elite$fitted, function(g) {
+  map_df(g, function(l) {
+    l$data %>%
+      group_by(item, sample_size, n_i) %>%
+      summarise(
+        n_pos = sum(judgment)
+        , n_neg = sum(!judgment)
+        , tie_breaker = rbernoulli(1)
+        , voted = case_when(
+          n_pos > n_neg ~ 1L
+          , n_pos < n_neg ~ 0L
+          , TRUE ~ as.integer(tie_breaker)
+        )
+        , true_class = unique(true_class)
+      )
+  })
+})
+
+elite_post_class <- elite_cs %>%
+  group_by(parameter, sample_size, n_i) %>%
+  summarise(
+    n_pos = sum(est)
+    , n_neg = sum(!est)
+    , tie_breaker = rbernoulli(1)
+    , post_class = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) %>%
+  mutate(item = as.integer(sub(".*\\[(\\d+)\\]$", "\\1", parameter)))
+
+elite_class_agreement <- elite_voted %>%
+  left_join(elite_post_class, by = c("item", "sample_size", "n_i")) %>%
+  select(sample_size, n_i, item, voted, post_class, true_class) %>%
+  mutate(agree = if_else(voted == post_class, "yes", "no")) %>%
+  group_by(sample_size, n_i, agree) %>%
+  summarise(n = n(), prop = n()/unique(sample_size)) %>%
+  filter(agree == "no") %>%
+  mutate(
+    prop = prop %>%
+      replace_na(0) %>%
+      `*`(100) %>%
+      round(2)
+    , temp = sprintf("%s (%s%s)", n, prop, "%")
+    , temp = sub("^(\\d )", " \\1", temp)
+  ) %>%
+  select(-agree, -n, -prop) %>%
+  spread(n_i, temp) %>%
+  mutate_at(2:9, funs(replace_na), " 0 (0%)")
+```
+
+```{r tab disagreement props, eval= FALSE}
+elite_class_agreement %>%
+  knitr::kable(
+    caption = "Disagreements between model-based classifications and majority voting"
+    , col.names = c("$n$", 3:10)
+    , format = "latex"
+    , booktabs = T
+    , linesep = ""
+  ) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+```{r tab class corr}
+elite_class_corr <- elite_voted %>%
+  left_join(elite_post_class, by = c("item", "sample_size", "n_i")) %>%
+  group_by(sample_size, n_i) %>%
+  summarise(class_corr = cor(voted, post_class))
+
+elite_class_corr %>%
+  spread(n_i, class_corr) %>%
+  knitr::kable(
+    caption = "Correlation between model-based classifications and majority voting"
+    , col.names = c("$n$", 3:10)
+    , format = "latex"
+    , booktabs = T
+    , linesep = ""
+    , escape = FALSE
+  ) %>%
+  add_header_above(c(" " = 1, "Number of judgments per instance" = 8), italic = TRUE) %>%
+  kable_styling(latex_options = "hold_position")
+
+```
+
+When plotting performance metrics for majority-voting induced classifications (Figure 10), we see that we get no false-positives with majority voting: the precision and TNR of all models are perfect (false-positives factor in the denominator of these metrics).
+What is more, because of the strong class imbalance, the accuracies are also very close to perfect.
+The recall/TPR are much lower, however, and we see that in contrast to model-based labelings, F1-scores improve slower as $n_i$ is increased.
+
+```{r sim_vote_performance, fig.height = 6, fig.cap="Performance of majority voring by $n$ and $n_i$. Classifications obtained by inducing majority winner (with random tie-breaking for even $n_i$) in simulated anti-elitism codings."}
+elite_voted_quality <- elite_voted %>%
+  group_by(sample_size, n_i) %>%
+  summarise(
+    n_judgments = n_distinct(item)
+    , Accuracy = sum(voted == true_class)/n_distinct(item)
+    , tp = sum(voted == 1 & true_class == 1)
+    , fn = sum(voted == 0 & true_class == 1)
+    , fp = sum(voted == 1 & true_class == 0)
+    , tn = sum(voted == 0 & true_class == 0)
+    , TPR = tp / (tp + fn)
+    , TNR = tn / (tn + fp)
+    , FPR = fp / (tn + fp)
+    , FNR = fn / (tp + fn)
+    , Precision = tp / (tp + fp)
+    , Recall = TPR
+    , `F1-score` = 2*((Precision*Recall)/(Precision + Recall))
+  ) %>%
+  ungroup() %>%
+  gather(metric, value, -sample_size, -n_i)
+
+p_elite_voted_quality <- elite_voted_quality %>%
+  filter(metric %in% these_metrics) %>%
+  ggplot() +
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(metric)
+    , scales = "free_x"
+    , switch = "y"
+  ) +
+  geom_point(aes(x = n_i, y = value), size = .5) +
+  scale_x_continuous(breaks = 3:10, minor_breaks = NULL, limits = c(2.7, 10.3)) +
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_voted_quality +
+  labs(y = NULL, x = expression(paste("Number of judgments aggregated per instance, ", n[i])))
+```
+
+Given that we obtain posterior classifications for each iteration and each chain of each model, we can also compute how confident we can be that BBA models and majority voting induce different classification performances.
+These differences are illustrated for F1-scores in Figure 11.[^5]
+
+[^5]: To obtain 90% confidence bounds, the majority-voting based F1-score point estimates have been subtracted from scores induced by model-based classifications of each iteration. This yielded 3000 differences that were aggregated into means and 90%-CIs.
+
+```{r sim_bba_mv_f1_differences, fig.height = 4.5, fig.cap="Mean differences and 90\\%-CIs between F1-scores induced by majority voting and model-based classifications. Positive (negative) differences indicate superiority of model (majority voting)."}
+
+elite_f1_compared <- elite_postclass_quality %>%
+  rename(value = "F1-score") %>%
+  select(sample_size, n_i, chain, iter, value) %>%
+  left_join(
+    elite_voted_quality %>%
+      filter(metric == "F1-score") %>%
+      select(-metric)
+    , by = c("sample_size", "n_i")
+    , suffix = c("_model", "_voted")
+  ) %>%
+  # pos diff indicates model better, neg indicates vote better
+  mutate(diff = value_model - value_voted)
+
+p_elite_f1_compared <- elite_f1_compared %>%
+  group_by(sample_size, n_i) %>%
+  summarise(
+    mean_diff = mean(diff)
+    , q05 = quantile(diff, .05)
+    , q95 = quantile(diff, .95)
+  ) %>%
+  ggplot(aes(y = mean_diff, ymin = q05, ymax = q95, x = n_i)) +
+    geom_point() +
+    geom_linerange(size = .5) +
+    geom_hline(yintercept = 0, color = "red", size = .25) +
+    scale_x_continuous(breaks = 3:10, minor_breaks = 3:10) +
+    facet_grid(
+      rows = vars(sample_size)
+      , switch = "y"
+    ) +
+    theme(strip.text.y = element_text(angle = 180))
+
+p_elite_f1_compared +
+  labs(y = NULL, x = expression(paste("Number of judgments aggregated per instance, ", n[i])))
+```
+
+Figure 11 shows that while majority voting tends outperform model-based classifications in terms of F1-scores for $n_i = 3$ across values of $n$ (though not significantly for all $n$), we see that for intermediate $n_i$ model-based classifications tends to perform (significantly) better.
+Specifically, for $5 < n_i < 9$, we are 95% certain across values of $n$ that model-based classification yield higher F1-scores than does majority voting.
+The fact that the advantage of model-based labeling tends to level-off at high $n_i$ shows that it induces performance improvements more quickly, whereas majority voting also achieves high classification performances as $n_i$ approaches 10. 
+Thus, when collecting additional judgments per instance is costly, using model-based aggregation is a better choice in terms of classification performance.
+To see the significance of this result, consider again that the F1-score takes both precision and recall into account, and hence one can achieve high F1-scores only if the aggregation method of choice performs also reasonable well in correctly classifying minority class instances.
+
+# Replicating simulation results in real judgments
+
+Whereas we cannot assess classification performance beyond the gold-standard instances in HAB's data, we can examine how posterior classification uncertainty changes as the number of judgments aggregated per instance is increased.
+The motivation if this assessment is that, against the background of the simulation study, we know that increasing $n_i$ leads to both average PCU decreases and classification performance improvments. 
+If we were to find PCU decreases as $n_i$ in real judgment data, we would have reason to belief that classification performance improves, too.
+
+Hence, I have replicated HAB's original crowd-sourcing and collected seven additional judgments for a stratified sample of total 300 non-gold-standard instances in HAB data.
+Specifically, I have stratified instances by posterior class estimate and PCU values, and sampled 12 estimated true and 18 estimated negative instances in each of ten equally sized PCU-percentile folds.
+
+```{r sample free judgments, eval = FALSE}
+
+elite_post_pi <- get_mcmc_estimates(elite_mcmc_fit_t, "pi", use.regex = F)
+
+elite_post_c <- get_mcmc_estimates(elite_mcmc_fit_t, "c\\[\\d+\\]")
+
+elite_post_c_sum <- elite_post_c %>% 
+  group_by(parameter) %>% 
+  summarise(
+    mean = mean(est)
+    , pcu = sd(est)
+  ) %>% 
+  mutate(
+    item = as.integer(gsub(".+\\[(\\d+)\\]$", "\\1", parameter))
+    , label = mean > .5
+  )
+
+n_pos <- 300*.4
+n_neg <- 300-n_pos
+
+free_instances <- codings %>% 
+  filter(!f8_golden) %>% 
+  select(item, f8_unit_id) %>% 
+  unique()
+
+sample_strat <- function(.x, label.var, n.pos = n_pos/10, n.neg = n_neg/10) {
+  rbind(
+    .x %>% 
+      ungroup() %>% 
+      filter(label) %>% 
+      sample_n(n.pos)
+    , .x %>% 
+      ungroup() %>% 
+      filter(!label) %>% 
+      sample_n(n.neg)
+  ) %>% 
+    sample_n(n.neg+n.pos)
+}
+
+inst_sample300 <- free_instances %>% 
+  left_join(elite_post_c_sum) %>% 
+  mutate(pcu_percentile = ntile(pcu, 10)) %>% 
+  group_by(pcu_percentile) %>% 
+  nest() %>%
+  mutate(data = map(data, sample_strat)) %>% 
+  unnest()
+  
+target_col_names <- c(
+  "platform",
+  "country",
+  "party",
+  "type",
+  "is_populist",
+  "rile",
+  "logit_rile",
+  "id_str",
+  "user_id_str",
+  "name",
+  "created_at",
+  "text",
+  "retweet_count",
+  "likes_count",
+  "text_en"
+)
+
+  
+dat %>% 
+  filter(f8_unit_id %in% inst_sample300$f8_unit_id) %>% 
+  select(!!target_col_names) %>% 
+  unique() %>% 
+  write.csv("../exdata/f8_resample_300_job1317730.csv", row.names = FALSE, fileEncoding = "UTF-8")
+```
+
+I have then fitted a BBA model to judgments of these 300 instances with $n_i = 3,\,\ldots, 10$, using the same specifications as for the models fitted to the $n = 300$ simulated judgments.[^123]
+
+[^123] Again, DIC estimates mixed nicely and chains converged quickly. Autocorrelation was neglible using the thinning parameter values shown in Table in the Appendix. 
+
+```{r read fits test instances}
+test_post_ests <- readRDS(file.path(file_path, "data", "post_est_antielite_testf8_vary_n_i.RData"))
+```
+
+```{r plot_test_dcis, eval = FALSE}
+p_test_deviance_chains <- test_post_ests$dic %>% 
+  ggplot(aes(x = iter, y = est, color = factor(chain))) +
+  geom_line(alpha = .5) +
+  facet_grid(
+    rows = vars(n_i)
+    , switch = "y"
+    , scales = "free"
+  ) +
+  guides(color = FALSE) +
+  theme(strip.text.y = element_text(angle = 180))
+
+p_test_deviance_chains
+```
+
+```{r compute_test_pcu}
+test_pcus <- test_post_ests$c %>%
+  group_by(n_i, item) %>%
+  summarise(pcu = sd(est))
+
+test_pcu_sum <- test_pcus %>%
+  group_by(n_i) %>%
+  summarise(
+    mean_pcu = mean(pcu)
+    , sd_pcu = sd(pcu)
+    , lwr_pcu = quantile(pcu, .05)
+    , upr_pcu = quantile(pcu, .95)
+  )
+```
+
+
+```{r sim_test_distributions, eval = FALSE, fig.height = 3, fig.cap="Distributions of posterior classification uncertainty by $n$ and $n_i$. Results obtained by fitting BBA model to repeatedly judged elite critique codings."}
+p_test_pcu_distr <- test_pcu_sum %>%
+  ggplot() +
+  geom_violin(
+    data = test_pcus
+    , mapping = aes(x = n_i, y = pcu, group = n_i)
+    , color = NA, fill = "grey", alpha = .75
+  ) +
+  geom_point(aes(x = n_i, y = mean_pcu), size = .5) +
+  geom_linerange(aes(x = n_i, ymin = lwr_pcu, ymax = upr_pcu), size = .25) +
+  scale_x_continuous(breaks = 3:10)
+
+p_test_pcu_distr +
+  labs(
+    x = expression(paste("Number of judgments aggregated per instance, ", n[i]))
+    , y = expression(paste("Posterior classification uncertainty, ", SD(c[i])))
+  )
+```
+
+Figure X shows that while average PCU values decrease as $n_i$ is increased, the variation across instances does not decrease substantially. (Distributions are shown in Figure X in the Appendix). 
+This stands in contrast to the results in the results obtained using simulated judgments data, and suggests that there is a set of instances that cannot be classified with high certainty even if additional judgments are collected. 
+This hints at ambiguity in the coding scheme or inherent difficulty of these items [cf. @carpenter_multilevel_2008], and warrants further investigation.
+
+```{r test_pcu_sumstats, fig.cap="Change in posterior classification uncertainty.  Results obtained by fitting BBA model to repeatedly judged elite critique codings."}
+p_test_pcu_avgs <- test_pcu_sum %>%
+  select(-lwr_pcu, -upr_pcu) %>%
+  gather(stat, val, -n_i) %>%
+  mutate(stat = case_when(
+    stat == "mean_pcu" ~ "Average posterior classification uncertainty"
+    , stat == "sd_pcu" ~ "Std. dev. in posterior classification uncertainty"
+    , TRUE ~ NA_character_
+  )) %>%
+  ggplot(
+    aes(
+      x = n_i
+      , y = val
+      , alpha = .75
+    )
+  ) +
+    scale_x_continuous(breaks = 3:10) +
+    geom_line() +
+    geom_point(size = 3.5, color = "white", alpha = 1) +
+    geom_point(size = 3, shape = 1) +
+    geom_point(size = 1) +
+    facet_grid(~stat) +
+    guides(alpha = FALSE)
+
+p_test_pcu_avgs +
+  labs(
+    x = expression(paste("Number of judgments aggregated per instance, ", n[i]))
+    , y = NULL
+    , color = "Number of coded instances:"
+  )
+```
+
+Figure X indeed shows that there is a small portion of instances whose PCU values tend to increase as more judgments per instance are collected.
+Though these instances cannot be classified with high certainty, the model-based varying-$n_i$ approach I use here allows to separate these instances from others, whose PCU values decrease on average as more judgments are aggregated.
+
+```{r avg_pcu_change_test, fig.height=5, fig.width=6.5, fig.cap="Empirical distribution of instance-level posterior classification uncertainty as function of $n_i$. Counts, densities and relative proportions of instances with an average increase in (or no) PCU change ($\\bar{\\Delta}_{\\text{PCU}} > 0$) vs. others. Change in PCUs ($\\Delta_{\\text{PCU}}$) computed for each instance by substracting PCU value obtained for $n_i$ from value obtained for $n_i$. This difference is negative if PCU decreases. Average in $\\Delta_{\\text{PCU}}$ computed by aggregating over values $n_i = 3,\\,\\ldots ,\\,9$ at instance level. Non-negative average change flags instances for which collecting more judgments did not lead to reduction in posterior classification uncertainty."}
+test_cs_sd_dpn <- test_pcus %>% 
+  group_by(item) %>% 
+  mutate(delta_pcu = pcu - lag(pcu, order_by = n_i)) %>% 
+  arrange(item) %>% 
+  summarise(avg_delta_is_neg = mean(delta_pcu, na.rm = TRUE) < 0)
+
+test_pcus_change_plot_dat <- test_pcus %>% 
+  left_join(test_cs_sd_dpn) %>%
+  mutate(
+    Counts = TRUE
+    , Densities = TRUE
+    , Proportions = TRUE
+  ) %>% 
+  gather(geom, flag, -n_i, -item, -pcu, -avg_delta_is_neg)
+
+p_pcu_avf_delta <- ggplot() + 
+  geom_density(
+    data = subset(test_pcus_change_plot_dat, geom == "Densities")
+    , mapping = aes(x = pcu, fill = factor(avg_delta_is_neg))
+    , color = NA, alpha = 0.66
+  ) +
+  geom_density(
+    data = subset(test_pcus_change_plot_dat, geom == "Proportions")
+    , mapping = aes(x = pcu, y = stat(count), fill = factor(avg_delta_is_neg))
+    , position = "fill"
+    , color = NA, alpha = 0.66
+  ) + 
+  geom_histogram(
+    data = subset(test_pcus_change_plot_dat, geom == "Counts")
+    , mapping = aes(x = pcu, fill = factor(avg_delta_is_neg))
+    , color = NA, alpha = 0.66
+  ) + 
+  scale_x_continuous(breaks = c(0, .25, .5)) +
+  scale_fill_manual(
+    labels = c(expression(bar(Delta)[P*C*U]>=0), expression(bar(Delta)[P*C*U]<0))
+    , values = RColorBrewer::brewer.pal(3,name = "Set2")[2:1]
+  ) + 
+  facet_grid(
+    cols = vars(n_i)
+    , rows = vars(geom)
+    , scales = "free"
+    , switch = "y"
+  )
+
+p_pcu_avf_delta + 
+  labs(
+    x = expression(paste("Postierior classification uncertainty, ", SD(bold(c)[i])))
+    , y = NULL
+    , fill = "Average change in posterior classification uncertainty"
+  ) 
+```
+
+This result is quite significant as only model-based aggregationg allows to separate these instances.
+As Table X shows, majority voting is not as cautious when it comes to classifying these instances, and thus the correlation between model-based and majority winner labeling decreases in instances with non-negative average PCU change.
+
+```{r tab corr mv test}
+test_bba_class <- test_post_ests$c %>%
+  group_by(n_i, item) %>%
+  summarise(label = mean(est))
+
+test_class_corr <- test_post_ests$voted %>%
+  left_join(test_bba_class, by = c("item", "n_i")) %>%
+  left_join(test_cs_sd_dpn) %>% 
+  group_by(avg_delta_is_neg, n_i) %>%
+  summarise(class_corr = cor(voted, label))
+
+test_class_corr %>%
+  spread(n_i, class_corr) %>%
+  ungroup() %>% 
+  mutate(avg_delta_is_neg = if_else(avg_delta_is_neg, "$< 0$", "$\\geq 0$")) %>% 
+  knitr::kable(
+    caption = "Correlation between model-based classifications and majority voting."
+    , col.names = c("$\\Delta_{\\text{PCU}}$", 3:10)
+    , format = "latex"
+    , booktabs = T
+    , linesep = ""
+    , escape = FALSE
+  ) %>%
+  add_header_above(c(" " = 1, "Number of judgments per instance" = 8), italic = TRUE) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+# Summary and discussion
+
+In this analysis, I have address three questions pertaining to the crowd-sourced measurement of elite critique.
+First, I have assessed crowd coders' abilities to classify elite critique as well as the variability in abilities across coders by fitting a Beta-Binomial by Annotator model to codings data collected by @hua_networked_2018.
+I find that crowd coders exhibit rather low true-positive detection abilities compared to their performances in true-negative detection, and that there is substantial variation in their true-positive detection abilities (see Figures 3 and 4).
+Our posterior belief about how sensitive elite-critique coders crowd workers are is thus more uncertain than our belief in their specificity in this task, but on average we would expect lower true-positive than true-negative detection abilities (see Figure 5).
+
+Second, I have implemented a simulation study designed to assess how increasing the number of coded instances (sample size) and the number of judgments per instance affects model-based labeling quality.
+I conclude that increasing the number of judgement aggregated per instance reduces instance-level uncertainty of model-based classifications, whereas the gains achieved by increasing the number of coded instance are negligible (see Figure 9).
+Specifically, as the number of judgments aggregated per instance is increased, (i) posterior classification uncertainty in instance labels decreases in the overwhelming share of instances, and (ii) the variation in posterior classification uncertainty across instances decreases.
+What is more, the veracity of model-based classifications with respect to simulated true labels, measured by accuracy and F1-scores, improves substantially, largely due to decreasing amounts of true-positive instances that are classified wrongly (see Figure 10). 
+
+Third, using the same simulated data, I have compared model-based labels to labels induced by majority voting.
+I find strong correlations between these labels (see Table 2), largely independent of the number of coded instances and the number of judgments aggregated per instance. 
+However, I also find that while majority voting tends to outperform model-based labeling in terms of classification performance (F1-scores) when only four or fewer judgments are aggregated per instances, this relationship reverses in favor of model-based labeling if this number is increased---particularly so as the number of coded instances is increased (see Figure 14)
+
+With regard to the  results of the simulation study, an open question is whether we would find similar patterns in real codings data.
+As in HAB's original dataset each instance that is not in the gold-standard dataset was judged by only three coders, the second and third questions cannot feasibly be answered with this data.
+Collecting more judgments for a subset of instances in their original dataset would allow to do so.
+How to obtain `true' labels for instances in this subset would be another question, however.
+Submitting them to trained coders or experts to determine their true labels seems to be the most viable option.
+
+# Apendix
+
+```{r thetas_ae_intervals, eval = TRUE, fig.width=6, fig.height=8, fig.cap="Mean posterior estimates and 90\\% credibility intervals of coders' abilities for anti-elitism labeling. $\\theta_0$ and $\\theta_1$ refer to specificity and sensitivity, respectively. Estimates obtained from three MCMC chains of 10K iterations each, retaining only every 10th estimate."}
+
+elite_post_thetas_sum %>% 
+  ggplot(
+    aes(
+      x = mean, xmin = q05, xmax = q95,
+      y = coder
+    )
+  ) +
+    geom_errorbarh(height = 0, size = .25) +
+    geom_point(size = .5) +
+    facet_grid(~parameter, labeller = label_parsed) + 
+    scale_y_discrete(
+      limits = range(elite_post_thetas_sum$coder) + c(-10, 10)
+        , labels = NULL
+    ) + 
+    labs(x = "Posterior estimate", y = NULL) + 
+    theme(
+      axis.ticks.y = element_blank()
+      , panel.grid.major.y = element_blank()
+      , panel.grid.minor.y = element_blank()
+    )
+```
+
+
+
+```{r sim_data_judgment_sizes}
+expand.grid(n = seq(200,500,50), n_i = 3:10) %>%
+  mutate(n_judgments = n*n_i) %>%
+  spread(n_i, n_judgments) %>%
+  knitr::kable(
+    caption = "Number of judgments in simulated codings datasets with varying $n$ and $n_i$."
+    , col.names = c("$n$", 3:10)
+    , format = "latex"
+    , booktabs = TRUE
+    , linesep = ""
+    , escape = FALSE
+  ) %>%
+  add_header_above(c(" " = 1, "Number of judgments per instance" = 8), italic = TRUE) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+```{r}
+n_burnin <- read.csv(file.path(file_path, "config", "burnin_grid.csv"), row.names = 1)
+t(n_burnin) %>%
+  tbl_df() %>%
+  cbind(seq(200, 500, 50), .) %>%
+  knitr::kable(
+    caption = "Number of burn-in iterations of BBA models fitted to simulated $n\times n_i$-sized datasets."
+    , col.names = c("$n$", 3:10)
+    , format = "latex"
+    , booktabs = TRUE
+    , linesep = ""
+    , escape = FALSE
+  ) %>%
+  add_header_above(c(" " = 1, "Number of judgments per instance" = 8), italic = TRUE) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+```{r}
+thin <- read.csv(file.path(file_path, "config", "thinning_grid.csv"), row.names = 1)
+t(thin) %>%
+  tbl_df() %>%
+  cbind(seq(200, 500, 50), .) %>%
+  knitr::kable(
+    caption = "Thinning parameter of BBA models fitted to simulated $n\\times n_i$-sized datasets."
+    , col.names = c("$n$", 3:10)
+    , format = "latex"
+    , booktabs = TRUE
+    , linesep = ""
+    , escape = FALSE
+  ) %>%
+  add_header_above(c(" " = 1, "Number of judgments per instance" = 8), italic = TRUE) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+```{r plot_deviance_chains, eval = FALSE, fig.ext = "png", fig.height = 5, fig.width= 6.5, fig.cap="Deviance Information Criterion (DIC) for three chains by sample size, $n$, and number of judgments aggregated per instance, $n_i$."}
+elite_deviances <- map_df(sim_fitted$elite$fitted, function(g) {
+  map_df(g, function(l) {
+    get_mcmc_estimates(fit.obj = l$fit, params = "deviance") %>%
+      mutate(
+        n_i = unique(l$data$n_i)
+        , sample_size = unique(l$data$sample_size)
+      )
+  })
+})
+
+p_elite_deviance_chains <- ggplot(
+  data = elite_deviances
+  , aes(x = iter, y = est, color = factor(chain))
+) +
+  geom_line(alpha = .5) +
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(n_i)
+    , switch = "y"
+    , scales = "free"
+  ) +
+  guides(color = FALSE) +
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_deviance_chains + labs(
+    x = "Iterations"
+    , y = NULL
+  )
+```
+
+
+
+```{r tab significance PCU change, fig.height = 4, fig.width = 4}
+elite_pcu_deltas <- elite_pcus %>%
+  group_by(sample_size, parameter) %>%
+  arrange(sample_size, parameter, n_i) %>%
+  nest(-sample_size, -parameter) %>%
+  mutate(
+    lags = map(
+      data
+      , function(dat) {
+          imap_dfc(dat[-1], ~set_names(map(1:7, lead, x = .x), paste0(.y, '_lag', 1:7)))
+      }
+    )
+  ) %>%
+  unnest() %>%
+  arrange(sample_size, parameter, n_i) %>%
+  gather(window_size, val, -sample_size, -parameter, -n_i, -pcu, na.rm = TRUE) %>%
+  mutate(window_size = as.integer(gsub("\\D", "", window_size))) %>%
+  arrange(sample_size, parameter, n_i, window_size)
+
+elite_pcu_deltas_sum <- elite_pcu_deltas%>%
+  mutate(
+    diff_pcu = val - pcu
+    , diff_is_pos = diff_pcu > 0
+  ) %>%
+  group_by(sample_size, n_i, window_size) %>%
+  summarise(prop_pos = mean(diff_is_pos))
+
+
+elite_pcu_deltas_sum %>%
+  mutate(
+    prop_pos = round(prop_pos, 3)
+    , prop_pos = case_when(
+      prop_pos <= .001 ~ paste0(prop_pos, "$^{***}$")
+      , prop_pos <= .01 ~ paste0(prop_pos, "$^{**}$")
+      , prop_pos <= .05 ~ paste0(prop_pos, "$^*$")
+      , prop_pos <= .1 ~ paste0(prop_pos, "$^+$")
+      , TRUE ~ as.character(prop_pos)
+    )
+  ) %>%
+  spread(window_size, prop_pos) %>%
+  mutate_at(3:9, function(x) ifelse(is.na(x), "", x)) %>%
+  knitr::kable(
+    caption = "Proportion of instances with positive change in posterior classification uncertainty."
+    , col.names = c("$n$", "$n_i$", 1:7)
+    , format = "latex"
+    , longtable = T
+    , booktabs = T
+    , linesep = ""
+    , escape = FALSE
+  ) %>%
+  add_header_above(c(" " = 1, " " = 1, "Number of judgments successively added" = 7), italic = TRUE) %>%
+  kable_styling(
+    latex_options = c(
+      "hold_position"
+      , "repeat_header"
+    )
+    # , font_size = 7
+  )
+
+```
+
+\clearpage
+
+```{r tab f1score change significances}
+elite_postclass_f1_deltas <-  elite_postclass_quality %>%
+  select(sample_size, n_i, chain, iter, f1 = `F1-score`) %>%
+  group_by(sample_size, chain, iter) %>%
+  arrange(sample_size, chain, iter, n_i) %>%
+  nest(-sample_size, -chain, -iter) %>%
+  mutate(
+    lags = map(
+      data
+      , function(dat) {
+          imap_dfc(dat[-1], ~set_names(map(1:7, lead, x = .x), paste0(.y, '_lag', 1:7)))
+      }
+    )
+  ) %>%
+  unnest() %>%
+  arrange(sample_size, chain, iter, n_i) %>%
+  gather(window_size, val, -sample_size, -chain, -iter, -n_i, -f1, na.rm = TRUE) %>%
+  mutate(window_size = as.integer(gsub(".+_lag(\\d)", "\\1", window_size))) %>%
+  arrange(sample_size, chain, iter, n_i, window_size)
+
+elite_postclass_f1_deltas_sum <- elite_postclass_f1_deltas %>%
+  mutate(
+    # difference between higher and  reference n_i-values
+    diff = val - f1
+    # is higher-n_i value lower than reference n_i-value?
+    , diff_is_neg = diff < 0
+  ) %>%
+  group_by(sample_size, n_i, window_size) %>%
+  # compute proportion of iterations across chains with F1-score reduction (the smaller, the better)
+  summarise(prop_neg = mean(diff_is_neg))
+
+elite_postclass_f1_deltas_sum %>%
+  mutate(
+    prop_neg = round(prop_neg, 3)
+    , prop_neg = case_when(
+      # logic of sign. test: the fewer the prop. of iterations across chains with a F1-score reduction, the better
+      prop_neg <= .001 ~ paste0(prop_neg, "$^{***}$")
+      , prop_neg <= .01 ~ paste0(prop_neg, "$^{**}$")
+      , prop_neg <= .05 ~ paste0(prop_neg, "$^*$")
+      , prop_neg <= .1 ~ paste0(prop_neg, "$^+$")
+      , TRUE ~ as.character(prop_neg)
+    )
+  ) %>%
+  spread(window_size, prop_neg) %>%
+  mutate_at(3:9, function(x) ifelse(is.na(x), "", x)) %>%
+  knitr::kable(
+    caption = "Proportion of iterations with negative change in F1-score"
+    , col.names = c("$n$", "$n_i$", 1:7)
+    , format = "latex"
+    , longtable = T
+    , booktabs = T
+    , linesep = ""
+    , escape = FALSE
+  ) %>%
+  add_header_above(c(" " = 1, " " = 1, "Number of judgments successively added" = 7), italic = TRUE) %>%
+  kable_styling(
+    latex_options = c(
+      "hold_position"
+      , "repeat_header"
+    )
+    # , font_size = 7
+  )
+```
+
+```{r sim_test_distributions_apx, eval = TRUE, fig.height = 3, fig.cap="Distributions of posterior classification uncertainty by $n$ and $n_i$. Results obtained by fitting BBA model to repeatedly judged elite critique codings."}
+p_test_pcu_distr <- test_pcu_sum %>%
+  ggplot() +
+  geom_violin(
+    data = test_pcus
+    , mapping = aes(x = n_i, y = pcu, group = n_i)
+    , color = NA, fill = "grey", alpha = .75
+  ) +
+  geom_point(aes(x = n_i, y = mean_pcu), size = .5) +
+  geom_linerange(aes(x = n_i, ymin = lwr_pcu, ymax = upr_pcu), size = .25) +
+  scale_x_continuous(breaks = 3:10)
+
+p_test_pcu_distr +
+  labs(
+    x = expression(paste("Number of judgments aggregated per instance, ", n[i]))
+    , y = expression(paste("Posterior classification uncertainty, ", SD(c[i])))
+  )
+```
+
+# References
+
+

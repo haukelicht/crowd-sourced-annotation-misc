@@ -1,0 +1,447 @@
+\documentclass[]{article}
+\usepackage{lmodern}
+\usepackage{amssymb,amsmath}
+\usepackage{ifxetex,ifluatex}
+\usepackage{fixltx2e} % provides \textsubscript
+\ifnum 0\ifxetex 1\fi\ifluatex 1\fi=0 % if pdftex
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+\else % if luatex or xelatex
+  \ifxetex
+    \usepackage{mathspec}
+  \else
+    \usepackage{fontspec}
+  \fi
+  \defaultfontfeatures{Ligatures=TeX,Scale=MatchLowercase}
+\fi
+% use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+% use microtype if available
+\IfFileExists{microtype.sty}{%
+\usepackage{microtype}
+\UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\hypersetup{unicode=true,
+            pdftitle={Measuring populism using nosiy human codings of textual data},
+            pdfauthor={Hauke Licht},
+            pdfborder={0 0 0},
+            breaklinks=true}
+\urlstyle{same}  % don't use monospace font for urls
+\usepackage{longtable,booktabs}
+\usepackage{graphicx,grffile}
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\makeatother
+% Scale images if necessary, so that they will not overflow the page
+% margins by default, and it is still possible to overwrite the defaults
+% using explicit options in \includegraphics[width, height, ...]{}
+\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+\IfFileExists{parskip.sty}{%
+\usepackage{parskip}
+}{% else
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 2pt minus 1pt}
+}
+\setlength{\emergencystretch}{3em}  % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{0}
+% Redefines (sub)paragraphs to behave more like sections
+\ifx\paragraph\undefined\else
+\let\oldparagraph\paragraph
+\renewcommand{\paragraph}[1]{\oldparagraph{#1}\mbox{}}
+\fi
+\ifx\subparagraph\undefined\else
+\let\oldsubparagraph\subparagraph
+\renewcommand{\subparagraph}[1]{\oldsubparagraph{#1}\mbox{}}
+\fi
+
+%%% Use protect on footnotes to avoid problems with footnotes in titles
+\let\rmarkdownfootnote\footnote%
+\def\footnote{\protect\rmarkdownfootnote}
+
+%%% Change title format to be more compact
+\usepackage{titling}
+
+% Create subtitle command for use in maketitle
+\newcommand{\subtitle}[1]{
+  \posttitle{
+    \begin{center}\large#1\end{center}
+    }
+}
+
+\setlength{\droptitle}{-2em}
+
+  \title{Measuring populism using nosiy human codings of textual data}
+    \pretitle{\vspace{\droptitle}\centering\huge}
+  \posttitle{\par}
+    \author{Hauke Licht}
+    \preauthor{\centering\large\emph}
+  \postauthor{\par}
+      \predate{\centering\large\emph}
+  \postdate{\par}
+    \date{2019-04-08}
+
+
+\begin{document}
+\maketitle
+
+\begin{verbatim}
+## NULL
+\end{verbatim}
+
+\hypertarget{introduction}{%
+\subsection{Introduction}\label{introduction}}
+
+With the increased scholarly interest in populism that political science
+has witnessed in the last two decades, the measurement of populism has
+presented itself as a major challenge to the discipline. Different
+instruments have been proposed to elicit measurements of populism (for
+review articles see Pauwels 2017; Bergman 2018; Kirk A. Hawkins et al.
+2018), ranging from
+
+\begin{itemize}
+\tightlist
+\item
+  actor-based classifications by experts (e.g., Polk et al. 2017)
+\item
+  over content analytical approaches relying on human judgment (e.g.,
+  Jagers and Walgrave 2007; Hawkins 2009; Rooduijn and Pauwels 2011;
+  Rooduijn, de Lange, and van der Brug 2014; Ernst et al. 2017;
+  Aslanidis 2018; March 2018) or computerized dictionary methods (e.g.,
+  Pauwels 2011; Rooduijn and Pauwels 2011; Oliver and Rahn 2016)
+\item
+  to approaches based on machine learning approaches that learn to
+  predict populist instances from human annotated training data (Hua,
+  Abou-Chadi, and Barberá 2018; Kirk A Hawkins and Silva 2018) or use
+  word-embedding techniques ({\textbf{???}}; Dai 2019).
+\end{itemize}
+
+This research note is addressing a challenge to the content-analytical
+measurement of populism that has hitherto received littel to no
+attention. Classical content-analytical measurement instruments present
+human coders with instances of text, which they then are asked to judge
+in accordance with a coding scheme (Krippendorff 2004). While
+researchers usually translate their theoretical concept of populism into
+a categorical coding scheme with the goal to illicit correct
+measurements, measurement ultimately relies on the judgement of human
+coders. Human coders---irrespectige of their domain-specific expertise
+and their level of prior training---are thus considered `noisy labelers'
+in the statistical literature (Dawid and Skene 1979; Passonneau and
+Carpenter 2014; Guan et al. 2017). Coders varying abilities to correctly
+classify or rate instances of text thus generally constitutes one source
+of error in content-analytical measurements of populism that is not
+eliminable by design.
+
+Depending on the degree of human coders' falibility and the aggregation
+method used to obtain measurements at the level of instances, such
+coding error may impair measurement quality. This applies most
+specifically to conventional, non-parametric aggregation methods such as
+majority voting that due not account for the possibility of
+agreement-in-error (i.e., the majority of coders agrees on the false
+judgement, see Passonneau and Carpenter 2014). The goal of my analysis
+is thus to assess the variability and the degree of imperfection in
+human coders abilities to classify instances along the dimensions of a
+categorical coding scheme design to measure populism in textual data.
+
+To do so I fit Bayesian annotation models to the human codings Hua,
+Abou-Chadi, and Barberá (2018) have collect on the crowd-sourcing
+platform \emph{CrowdFlower}. Specifically, I fit the Beta-Binomial by
+Annotator (BBA) model proposed by Carpenter (2008) that allows to
+estimate the positive class's prevalence, items' class membership, as
+well as coders' individual specificities and sensitivities from the
+codings data. Assessing coders' abilities in this `crowd' of untrained
+human coders allows to determine a lower benchmark on the aggregate
+measurement quality their judgements yield. The specific case I select
+for analysis thus constitutes a hard test for my argument: If
+model-based estimates of human coders' abilities indicate
+close-to-perfect coder abilities, we would be less concerned that
+aggreement-in-error causes false classifications of instance. Likewise,
+if the model-based aggregation of noisy labels into instance-level
+measruements does not yield substantively different classifications that
+do non-parametric aggregation methods, the added value of obtaining
+estimates of coder abilities seems unjustified.
+
+The remainder of this reasearch note is structured as follows: First, I
+introduce the measurements instrument used by Hua, Abou-Chadi, and
+Barberá (2018) to obtain their crowd codings and describe the data. I
+then introduce the BBA model, discuss its notation, and show results
+from a simulation study that demonstrate that its implementation in JAGS
+({\textbf{???}}) allows to recover simulated parameter values.
+
+\hypertarget{data-and-empirical-strategy}{%
+\subsection{Data and empirical
+strategy}\label{data-and-empirical-strategy}}
+
+\hypertarget{crowd-sourced-codings-of-populism-in-textual-data}{%
+\subsubsection{Crowd-sourced codings of populism in textual
+data}\label{crowd-sourced-codings-of-populism-in-textual-data}}
+
+Hua et al.~recruited crowd workers on the crowd-sourcing platform
+\emph{CrowdFlower} to code social media posts created by a selected
+number of accounts of Wesrtern European parties and their leaders
+according to the following coding scheme:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Filter questions:
+
+  \begin{enumerate}
+  \def\labelenumii{\arabic{enumii}.}
+  \tightlist
+  \item
+    This post has no text or its content is impossible to understand.
+  \item
+    I understand the message of this social media post.
+  \end{enumerate}
+\item
+  \emph{Anti-elitism}: Does this tweet/post criticize or mention in a
+  negative way the elites?
+\item
+  \emph{People-centrism}: Does this tweet/post mention in a positive way
+  or even praise the people (citizens of the country, the working class,
+  the native \ldots) or the nation?
+\item
+  \emph{Exclusionism}: Does this tweet/post criticize minorities or
+  specific groups of people (muslims, jews, LGBT people, poor people
+  \ldots)?
+\end{enumerate}
+
+Coders were asked to answer Yes or No to all questions; all judgements
+obtained are thus binary. If a coder answered question 1.1 affirmatively
+for a post, she was asked to skip the given post and proceed with
+judging the next one. If a coder answered question 1.2 affirmatively for
+a post, she was asked to proceed with answering questions 2--4 and then
+proceed with judging the next post.
+
+Of particular interst are the judgments Hua et al.~collected in an
+effort to assertain the reliability of their crowd-source measurement
+instrument. Interested in computing inter-coder agreement metrics, Hua
+et al.~crowd-sourced judgments from 1 different coders for a set of 1
+different social media posts (items). As the following table shows, each
+item was coded between 1 and four times.
+
+\begin{longtable}[]{@{}rrr@{}}
+\toprule
+No.~Judgments & No.~Coders & \(N\)\tabularnewline
+\midrule
+\endhead
+1 & 1 & 507\tabularnewline
+2 & 2 & 89\tabularnewline
+3 & 3 & 902\tabularnewline
+4 & 4 & 2\tabularnewline
+\bottomrule
+\end{longtable}
+
+Keeping all judgments that passed the first two filter
+questions,\footnote{These were all items for which the meta variable
+  \texttt{fitler} had the value `ok'.} I was able to retain a total 1489
+items from the original validation data.
+
+\hypertarget{the-bayesian-beta-binomial-by-annotator-model}{%
+\subsubsection{The Bayesian Beta-Binomial by Annotator
+model}\label{the-bayesian-beta-binomial-by-annotator-model}}
+
+I assume that the anti-elitism, people-centrism, and exclusionism are
+latent binary features of political posts, and hence crowd coders act as
+human content analysts whose judgments I want to aggregate at the
+item-level to estimate whether a given item belongs to either of these
+three categories.
+
+For each dimension, the setup can be described as a four-tuple
+\(\langle\mathcal{I}, \mathcal{J}, \mathcal{K}, \mathcal{Y}\rangle\),
+where
+
+\begin{itemize}
+\tightlist
+\item
+  \(\mathcal{I}\) is the set of \emph{items} \(i \in 1,\ \ldots ,\ n\)
+  distributed for crowd coding,
+\item
+  \(\mathcal{J}\) is the set of \emph{coders} \(j \in 1,\ \ldots ,\ m\),
+\item
+  \(\mathcal{K}\) is the set of \emph{classes} \(k \in \{0, 1\}\)
+  defined by the categorical coding scheme used during crowd-coding, and
+\item
+  \(\mathcal{Y}\) is the set of \emph{judgments} (or codings)
+  \(y_{i,j} \in \{0, 1\}\) recorded for item \(i\) by coder \(j\).
+\end{itemize}
+
+In Hua et al.'s validation data, it is provided that \(\mathcal{Y}\)
+contains at least one judgment per item, that is,
+\(|\mathcal{Y}_i| \geq 1\ \forall\ i \in \mathcal{I}\), and that
+\(|\mathcal{Y}_i| \geq 2\ \forall\ i \in \mathcal{I}' \subset \mathcal{I}\).
+Moreover, judgments for each item in \(\mathcal{I}'\) are generated by
+different coders (i.e., we have repeated annotation at the statement
+level, but not at the judgment-item level).
+
+Importantly, while coders' judgments of items are observed, true class
+labels \(l_i \in \mathcal{K}\) are unknown \emph{a priori} for all
+\(i = 1,\ \ldots,\ I\). In this setup, a classification of items into
+classes obtained from a set of judgments
+\(\rho(\mathcal{Y}) \Rightarrow \mathcal{L}\) is called a \emph{`ground
+truth'} or \emph{labeling}. I obtain these ground truth estimates by
+fitting the following model to the judgement data:
+
+\[
+\begin{align*}
+c_i &\sim\ \mbox{Bernoulli}(\pi)\\
+\theta_{0j} &\sim\ \mbox{Beta}(\alpha_0 , \beta_0)\\
+\theta_{1j} &\sim\ \mbox{Beta}(\alpha_1 , \beta_1)\\
+y_{ij} &\sim\ \mbox{Bernoulli}(c_i\theta_{1j} + (1 - c_i)(1  - \theta_{0j}))\\
+{}&{}\\
+\pi &\sim\ \mbox{Beta}(1,1)\\
+\alpha_0/(\alpha_0 + \beta_0) &\sim\ \mbox{Beta}(1,1)\\  
+\alpha_0+\beta_0 &\sim\ \mbox{Pareto}(1.5)\\
+\alpha_1/(\alpha_1 + \beta_1) &\sim\ \mbox{Beta}(1,1)\\ 
+\alpha_1+\beta_1  &\sim\ \mbox{Pareto}(1.5)
+\end{align*}
+\] where
+
+\begin{itemize}
+\tightlist
+\item
+  \(c_i\) is the `true' (unobserved) class of statement \(i\),
+\item
+  \(\pi\) is the `true' prevalence of the positive class,
+\item
+  \(\theta_{0,j}\) is coder \(j\)'s specificity (true-negative rate),
+  and
+\item
+  \(\theta_{1,j}\) is her sensitivity (true-positive rate).
+\end{itemize}
+
+Carpenter (2008) refers to this model as the Beta-Binomial by Annotator
+(BBA) model. This name is due to its property that, given a conjugate
+beta prior, the posterior densities of items' class membership follow a
+beta-binomial distribution. All priors are choosen to be uninformative,
+as we have no prior knowledge in about coders' abilities or prevalence
+in this particular domain.
+
+\hypertarget{references}{%
+\subsection*{References}\label{references}}
+\addcontentsline{toc}{subsection}{References}
+
+\hypertarget{refs}{}
+\leavevmode\hypertarget{ref-aslanidis_populism_2018}{}%
+Aslanidis, Paris. 2018. ``Populism as a Collective Action Master Frame
+for Transnational Mobilization.'' \emph{Sociological Forum} 33 (2):
+443--64. \url{https://doi.org/10.1111/socf.12424}.
+
+\leavevmode\hypertarget{ref-bergman_quantitative_2018}{}%
+Bergman, Matthew E. 2018. ``Quantitative Measures of Populism: A
+Survey.'' SSRN Scholarly Paper ID 3175536. Rochester, NY: Social Science
+Research Network. \url{https://papers.ssrn.com/abstract=3175536}.
+
+\leavevmode\hypertarget{ref-carpenter_multilevel_2008}{}%
+Carpenter, Bob. 2008. ``Multilevel Bayesian Models of Categorical Data
+Annotation.'' Unpublished manuscript. unpublished manuscript.
+\url{http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.174.1374\&rep=rep1\&type=pdf}.
+
+\leavevmode\hypertarget{ref-dai_measuring_2019}{}%
+Dai, Yaoyao. 2019. ``Measuring Populism in Context: A Supervised
+Approach with Word Embedding Models.''
+
+\leavevmode\hypertarget{ref-dawid_maximum_1979}{}%
+Dawid, Alexander Philip, and Allan M Skene. 1979. ``Maximum Likelihood
+Estimation of Observer Error-Rates Using the EM Algorithm.''
+\emph{Applied Statistics} 28 (1): 20--28.
+\url{https://doi.org/10.2307/2346806}.
+
+\leavevmode\hypertarget{ref-ernst_extreme_2017}{}%
+Ernst, Nicole, Sven Engesser, Florin Büchel, Sina Blassnig, and Frank
+Esser. 2017. ``Extreme Parties and Populism: An Analysis of Facebook and
+Twitter Across Six Countries.'' \emph{Information, Communication \&
+Society} 20 (9): 1347--64.
+\url{https://doi.org/10.1080/1369118X.2017.1329333}.
+
+\leavevmode\hypertarget{ref-guan_who_2017}{}%
+Guan, Melody Y, Varun Gulshan, Andrew M Dai, and Geoffrey E Hinton.
+2017. ``Who Said What: Modeling Individual Labelers Improves
+Classification.'' \emph{arXiv Preprint arXiv:1703.08774}.
+
+\leavevmode\hypertarget{ref-hawkins_is_2009}{}%
+Hawkins, Kirk A. 2009. ``Is Chávez Populist?: Measuring Populist
+Discourse in Comparative Perspective.'' \emph{Comparative Political
+Studies} 42 (8): 1040--67.
+\url{https://doi.org/10.1177/0010414009331721}.
+
+\leavevmode\hypertarget{ref-hawkins_ideational_2018-1}{}%
+Hawkins, Kirk A., Ryan E. Carlin, Levente Littvay, and Cristóbal Rovira
+Kaltwasser. 2018. \emph{The Ideational Approach to Populism: Concept,
+Theory, and Analysis}. Routledge.
+
+\leavevmode\hypertarget{ref-hawkins_textual_2018}{}%
+Hawkins, Kirk A, and Bruno Castanho Silva. 2018. ``Textual Analysis.''
+In \emph{The Ideational Approach to Populism: Concept, Theory, and
+Analysis}, edited by Kirk A. Hawkins, Ryan E. Carlin, Levente Littvay,
+and Cristóbal Rovira Kaltwasser. Routledge.
+
+\leavevmode\hypertarget{ref-hua_networked_2018}{}%
+Hua, Whitney, Tarik Abou-Chadi, and Pablo Barberá. 2018. ``Networked
+Populism: Characterizing the Public Rhetoric of Populist Parties in
+Europe.'' In. Paper prepared for the 2018 MPSA Conference.
+
+\leavevmode\hypertarget{ref-jagers_populism_2007}{}%
+Jagers, Jan, and Stefaan Walgrave. 2007. ``Populism as Political
+Communication Style: An Empirical Study of Political Parties' Discourse
+in Belgium.'' \emph{European Journal of Political Research} 46 (3):
+319--45. \url{https://doi.org/10.1111/j.1475-6765.2006.00690.x}.
+
+\leavevmode\hypertarget{ref-krippendorff_content_2004}{}%
+Krippendorff, Klaus. 2004. \emph{Content Analysis: An Introduction to
+Its Methodology}. 2nd ed. Thousand Oaks, Calif: Sage.
+
+\leavevmode\hypertarget{ref-march_textual_2018}{}%
+March, Luke. 2018. ``Textual Analysis.'' In \emph{The Ideational
+Approach to Populism: Concept, Theory, and Analysis}, edited by Kirk A.
+Hawkins, Ryan E. Carlin, Levente Littvay, and Cristóbal Rovira
+Kaltwasser. Routledge.
+
+\leavevmode\hypertarget{ref-oliver_rise_2016}{}%
+Oliver, J Eric, and Wendy M Rahn. 2016. ``Rise of the Trumpenvolk:
+Populism in the 2016 Election.'' \emph{The ANNALS of the American
+Academy of Political and Social Science} 667 (1): 189--206.
+
+\leavevmode\hypertarget{ref-passonneau_benefits_2014}{}%
+Passonneau, Rebecca J, and Bob Carpenter. 2014. ``The Benefits of a
+Model of Annotation.'' \emph{Transactions of the Association for
+Computational Linguistics} 2: 311--26.
+
+\leavevmode\hypertarget{ref-pauwels_measuring_2011-1}{}%
+Pauwels, Teun. 2011. ``Measuring Populism: A Quantitative Text Analysis
+of Party Literature in Belgium.'' \emph{Journal of Elections, Public
+Opinion \& Parties} 21 (1): 97--119.
+\url{https://doi.org/10.1080/17457289.2011.539483}.
+
+\leavevmode\hypertarget{ref-pauwels_measuring_2017}{}%
+---------. 2017. ``Measuring Populism: A Review of Current Approaches.''
+In \emph{Political Populism: A Handbook}, edited by Reinhard C.
+Heinisch, Christina Holtz-Bacha, and Oscar Mazzoleni, 123--36. Nomos.
+
+\leavevmode\hypertarget{ref-polk_explaining_2017}{}%
+Polk, Jonathan, Jan Rovny, Ryan Bakker, Erica Edwards, Liesbet Hooghe,
+Seth Jolly, Jelle Koedam, et al. 2017. ``Explaining the Salience of
+Anti-Elitism and Reducing Political Corruption for Political Parties in
+Europe with the 2014 Chapel Hill Expert Survey Data.'' \emph{Research \&
+Politics} 4 (1): 1--9. \url{https://doi.org/10.1177/2053168016686915}.
+
+\leavevmode\hypertarget{ref-rooduijn_populist_2014}{}%
+Rooduijn, Matthijs, Sarah L de Lange, and Wouter van der Brug. 2014. ``A
+Populist Zeitgeist? Programmatic Contagion by Populist Parties in
+Western Europe.'' \emph{Party Politics} 20 (4): 563--75.
+\url{https://doi.org/10.1177/1354068811436065}.
+
+\leavevmode\hypertarget{ref-rooduijn_measuring_2011}{}%
+Rooduijn, Matthijs, and Teun Pauwels. 2011. ``Measuring Populism:
+Comparing Two Methods of Content Analysis.'' \emph{West European
+Politics} 34 (6): 1272--83.
+\url{https://doi.org/10.1080/01402382.2011.616665}.
+
+
+\end{document}

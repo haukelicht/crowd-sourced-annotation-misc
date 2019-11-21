@@ -1,0 +1,1186 @@
+---
+title: Analyze BBA models fitted to simulated anti-elite codings datasets varying n
+  and n[i]
+author: "Hauke Licht"
+date: "4/16/2019"
+output: html_document
+bibliography: /Users/licht/switchdrive/Documents/work/phd/phd_research.bib
+---
+
+<style type="text/css">
+.table {
+    margin-left: auto;
+    margin-right: auto;
+    width: 80%;
+}
+ul li { 
+  list-style-type: circle;
+}
+</style>
+
+```{r knitr, echo = FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE
+  , warning = FALSE
+  , message = FALSE
+  , fig.align = 'center'
+  , fig.height = 8
+  , fig.width = 10
+  , out.extra='style="padding:30px; display: inline-block;"'
+)
+```
+
+
+```{r setup}
+
+# set the file path
+file_path <- file.path("~", "switchdrive", "Documents", "work", "phd", "methods", "crowd-sourced_annotation")
+
+# load required packages
+
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(coda)
+library(ggplot2)
+library(ggridges)
+
+theme_set(
+  theme_bw() +
+    theme(
+      plot.caption = element_text(hjust = 0)
+      , strip.text.y = element_text(angle = 180)
+      , legend.position = "bottom"
+    )
+)
+# MCMCM misc 
+
+# set seed
+this_seed <- 1234
+set.seed(this_seed)
+
+# define parameters to estimate
+model_parameters <- c(
+    "deviance" # Decision Information Criterion (DIC)
+    , "pi" # Prevalence of positive class
+    , "c" # item classes
+    , "theta0", "theta1" # coder specificities and sensitivities, respectively
+    , "alpha0", "beta0" # shape parameters of coders' specificity hyperdistribution
+    , "alpha1", "beta1" # shape parameters of coders' sensitivity hyperdistribution
+  )
+
+# load internal helpers
+
+helpers <- c(
+  "get_mcmc_estimates.R"
+  , "transform_betabin_fit_posthoc.R"
+)
+
+{sapply(file.path(file_path, "code", "R", helpers), source); NULL}
+
+
+# read data and fitted objects from disk 
+
+sim_fitted <- readRDS(file.path(file_path, "fits", "sim_populism_codings_vary_n_and_n_i.RData"))
+
+# define generic plot captions
+
+elite_plot_caption <- bquote("Anti-elitism classification simulated with"~
+        pi==.(round(sim_fitted$elite$sim_params$pi, 3))~","~
+        theta[j0]~"~"~f[Beta](.(round(sim_fitted$elite$sim_params$alpha0, 3)),.(round(sim_fitted$elite$sim_params$beta0, 3)))~
+        "and"~
+        theta[j1]~"~"~f[Beta](.(round(sim_fitted$elite$sim_params$alpha1, 3)),.(round(sim_fitted$elite$sim_params$beta1, 3)))
+    )
+
+# NOTE: in case you get the error message 'Error: vector memory exhausted (limit reached?)', follow these instructions: https://stackoverflow.com/a/52612921
+```
+
+
+## Simulation parameters
+
+The true prevalence $\pi$ has been simulated at `r sim_fitted$elite$sim_params$pi`.
+Coders' ability parameters were drawn from the following two Beta-distributions:
+
+```{r plot annotator parameter PDFs, fig.height = 4, fig.width = 4, fig.align = 'center'}
+# sampling distribution annotator-specific parameters
+pdf_theta0 <- function(x) dbeta(x, sim_fitted$elite$sim_params$alpha0, sim_fitted$elite$sim_params$beta0)
+pdf_theta1 <- function(x) dbeta(x, sim_fitted$elite$sim_params$alpha1, sim_fitted$elite$sim_params$beta1)
+
+ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+  stat_function(fun=pdf_theta0, aes(color = "theta[0]")) +
+  stat_function(fun=pdf_theta1, aes(color = "theta[1]")) +
+  labs(
+    title = expression(paste("Densities of coders' ability hyperdistribtions: Specificities (", theta[.*0], ") and sensitivities (", theta[.*1], ")"))
+    , y = NULL
+    , x = expression(theta[..])
+    , color = ""
+  ) + 
+  theme_bw() +
+  theme(legend.position = "top") +
+  scale_colour_discrete(
+    labels = c(
+      bquote(theta[.*0]%~%f[Beta](.(round(sim_fitted$elite$sim_params$alpha0, 3)), .(round(sim_fitted$elite$sim_params$beta0, 3))))
+      , bquote(theta[.*1]%~%f[Beta](.(round(sim_fitted$elite$sim_params$alpha1, 3)), .(round(sim_fitted$elite$sim_params$beta1, 3))))
+    )
+  )
+```
+
+From these specificity and sensitivity distributions, tupples of ability parameters were randomly drawn for 40 coders.
+Coders' simulated abilities have the following empirical distribution.
+
+```{r plot sim thetas, fig.height = 4, fig.width = 4, fig.align = 'center'}
+tibble(
+  theta0 = sim_fitted$elite$sim_params$theta0
+  , theta1 = sim_fitted$elite$sim_params$theta1
+) %>% 
+  ggplot(aes(x = theta0, y = theta1)) +
+    geom_vline(aes(xintercept = median(theta0)), color = "grey") +
+    geom_hline(aes(yintercept = median(theta1)), color = "grey") + 
+    geom_point() +
+    scale_x_continuous(limits = range(sim_fitted$elite$sim_params$theta0) + c(-.05, 0)) + 
+    scale_y_continuous(limits = range(sim_fitted$elite$sim_params$theta1) + c(-.05, .05)) +
+    labs(
+      title = expression(paste("Distribution of coders' simulated ability parameters: Sensitivity (",theta[.*1],") vs. specificity (",theta[.*0],")"))
+      , x = expression(theta[.*0])
+      , y = expression(theta[.*1])
+    ) +
+    theme(
+      axis.title.y = element_text(angle = 0, vjust = .5) 
+    )
+```
+
+## Simulation results
+
+In total, I have randomly sampled 500 items from a Bernoulli distribtion with the simulated $\pi$ value of `r sim_fitted$elite$sim_params$pi`.
+Given a missingness rate of .75 (i.e., each item was judged by only 10 out of total 40 coders), I have then generated total 10 codings for each of these items.
+In order to examine how model-based posterior classifications of items perform as a function of the total number of items coded ($n$),
+I have then split from the entire items 500 blocks of 200, 250, 300, 350, 400, and 450 items, such that items in smaller sized blocks are nested in respective larger sized blocks (i.e., all items in block 200 are also in the 250 block, etc.).
+This is thought to imitate the situation were we collect increasing amount of codings for new items.
+For the differently $n$-size datasets, we get the following empirical prevalences:
+
+```{r report empirical prevalences}
+elite_sim_codings <- map_df(sim_fitted$elite$fitted, function(g) {
+  map_df(g, function(l) {
+    l$data %>% 
+      group_by(sample_size) %>% 
+      summarise(prop_true = mean(true_class))
+  })
+}) %>% 
+  unique()
+
+elite_sim_codings %>% 
+  knitr::kable(
+    caption = "Empirical prevalence of positive class in differently sized codings datasets"
+    , col.names = c("$n$", "Empirical prevalence")
+    , digits = 3
+  )
+```
+
+In order to examine how repeated coding of items affects model-based classification quality (i.e., increasing the number of judgments aggregated per coding, $n_i$), I have sampled different numbers of judgments for each item, such that $n_i \in \{3, 4, \ldots, 10\}$.
+Again, I have applied a nesting logic when spliting the entire codings dataset.
+That is, for a given item, all judgements that are in the $n_i = 3$ subset are also in the $n_i = 4, ..., 10$ subsets, etc.
+Mirroring the logic of fitting BBA models to differntly $n$-size but nested codings datasets, this simulation strategy mimics a situation where one collects increasing numbers of repeated codings from *different* coders for a given item.
+This yields the following grid:
+
+```{r show judgment sizes}
+expand.grid(n = seq(200,500,50), n_i = 3:10) %>% 
+  mutate(n_judgments = n*n_i) %>% 
+  spread(n_i, n_judgments) %>% 
+  knitr::kable(
+    caption = "No. judgments in codings datasets with varying $n$ and $n_i$"
+    , col.names = c("$n$/$n_i$", 3:10)
+  )
+```
+
+
+## Fit results
+
+### DIC
+- plot deviances
+
+```{r plot deviance chains}
+elite_deviances <- map_df(sim_fitted$elite$fitted, function(g) {
+  map_df(g, function(l) {
+    get_mcmc_estimates(fit.obj = l$fit, params = "deviance") %>% 
+      mutate(
+        n_i = unique(l$data$n_i)
+        , sample_size = unique(l$data$sample_size)
+      )
+  })
+})
+
+p_elite_deviance_chains <- ggplot(
+  data = elite_deviances
+  , aes(x = iter, y = est, color = factor(chain))
+) +
+  geom_line(alpha = .5) +
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(n_i)
+    , switch = "y"
+    , scales = "free"
+  ) + 
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_deviance_chains + labs(
+    title = expression(paste(
+      "Deviance Information Criterion (DIC) for three chains by "
+      , n, " and "
+      , n[i]
+    ))
+    , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+    , color = "Chain"
+    , x = "Iterations"
+    , y = NULL
+    , caption = elite_plot_caption
+  )
+```
+
+
+- inspect shrinkage and Autocorrelation (results not shown)
+
+```{r plot deviance shrinkage, eval = FALSE}
+for(g in seq_along(sim_fitted$elite$fitted)) {
+  for (n in 1:8) {
+    
+    nm <- sprintf("p_elite_shrinkage_n[i]=%s_n=%s", n+2, seq(200, 500, 50)[g])
+    
+    png(file.path(file_path, "plots", paste0(nm, ".png")))
+    coda::gelman.plot(sim_fitted$elite$fitted[[g]][[n]]$fit[,"deviance"], main = gsub("_", " ", nm))
+    dev.off()
+  } 
+}
+```
+
+```{r plot deviance autocorrelation, eval = FALSE}
+for(g in seq_along(sim_fitted$elite$fitted)) {
+  for (n in 1:8) {
+    
+    nm <- sprintf("p_elite_autocorr_n[i]=%s_n=%s", n+2, seq(200, 500, 50)[g])
+    
+    png(file.path(file_path, "plots", paste0(nm, ".png")))
+    coda::autocorr.plot(sim_fitted$elite$fitted[[g]][[n]]$fit[,"deviance"], ask = FALSE, main = gsub("_", " ", nm), lag.max = 50)
+    dev.off()
+  } 
+}
+```
+
+
+
+
+
+### Prevalence 
+
+Inspecting the mixture of chains of posterior estimates of $\pi$, we see that although for lower values of $n_i$ there is more variability in estimates, there is no drift in estimates and chains mix nicely.
+
+```{r plot pi chains}
+elite_pis <- map_df(sim_fitted$elite$fitted, function(g) {
+  map_df(g, function(l) {
+    get_mcmc_estimates(fit.obj = l$fit, params = "pi") %>% 
+      mutate(
+        n_i = unique(l$data$n_i)
+        , sample_size = unique(l$data$sample_size)
+      )
+  })
+})
+
+p_elite_pi_chains <- ggplot(
+  data = elite_pis
+  , aes(x = iter, y = est, color = factor(chain))
+) +
+  geom_line(alpha = .5) +
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(n_i)
+    , switch = "y"
+    , scales = "free"
+  ) + 
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_pi_chains + 
+  labs(
+    title = expression(paste(
+      "Posterior prevalence estimates for three chains by "
+      , n, " and "
+      , n[i]
+    ))
+    , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+    , color = "Chain"
+    , x = "Iterations"
+    , y = NULL
+    , caption = elite_plot_caption
+  )
+```
+
+Moreover, we can see that the posterior densities of all models are by and large close to the simulated prevalence parameter.
+The pull of the uniform Beta(1,1) prior is stronger in models fitted to small-$n$ subsets of the codings data, however.
+Generally, precision increases as $n$ and $n_i$ are increased.
+
+```{r plot pi posterior}
+p_elite_pi_post <- ggplot(elite_pis, aes(x = est)) +
+  geom_density(color = NA, fill = "grey", alpha = .75) +
+  geom_vline(aes(xintercept = sim_fitted$elite$sim_params$pi), color = "red") + 
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(n_i)
+    , switch = "y"
+  ) +
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_pi_post + 
+  labs(
+    title = expression(paste(
+      "Posterior densities of prevalence estimates by "
+      , n, " and "
+      , n[i]
+    ))
+    , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+    , color = "Chain"
+    , x = "Posterior parameter estimates\n(red vertical line marks true value)"
+    , y = "Density"
+    , caption = elite_plot_caption
+  )
+```
+
+
+### Posterior classifications 
+
+Turning to posterior class estimates and the posterior classifications induced by assigning items to the median posterior class estimate (identical to assignment based on whether or not the average posterior class estimate is > .5),
+a point of particular concern is how certain we are about posterior classifications. 
+
+```{r get c posteriors}
+elite_cs <- map_df(sim_fitted$elite$fitted, function(g) {
+  map_df(g, function(l) {
+    get_mcmc_estimates(fit.obj = l$fit, params = "c\\[\\d+\\]") %>% 
+      mutate(
+        n_i = unique(l$data$n_i)
+        , sample_size = unique(l$data$sample_size)
+      )
+  })
+})
+```
+
+#### Posterior classification uncertainty 
+
+Here, I define posterior classification uncertainty (PCU) as the standard deviation in posterior estimates across chains and iterations:
+\[
+  \text{SD}(\mathbf c_i) = \sqrt\frac{\sum_{t=1}^T (c_{it} - \bar{c}_i)^2}{T-1},
+\]
+where $t$ indexes the $t^{th}$ estimate and here $T = 1000 \times 3$ (iterations times chains).
+Note that the theoretical maximum of PCU is reached if an item is estimated to be a member of the positive class exactly half T/2 times, and this maximum approaches .5 as $T \to \infty$.
+
+```{r computeu}
+elite_pcus <- elite_cs %>% 
+  group_by(sample_size, n_i, parameter) %>% 
+  summarise(pcu = sd(est))
+
+elite_pcu_sum <- elite_pcus %>% 
+  group_by(sample_size, n_i) %>% 
+  summarise(
+    mean_pcu = mean(pcu)
+    , sd_pcu = sd(pcu)
+    , lwr_pcu = quantile(pcu, .05)
+    , upr_pcu = quantile(pcu, .95)
+  )
+```
+
+```{r plot PCU distributions}
+p_elite_pcu_distr <- elite_pcu_sum %>% 
+  ggplot() +
+  geom_violin(
+    data = elite_pcus
+    , mapping = aes(x = n_i, y = pcu, group = n_i)
+    , color = NA, fill = "grey", alpha = .76 
+  ) +
+  geom_point(aes(x = n_i, y = mean_pcu)) +
+  # geom_line(aes(x = n_i, y = mean_pcu)) +
+  geom_linerange(aes(x = n_i, ymin = lwr_pcu, ymax = upr_pcu)) +
+  scale_x_continuous(breaks = 3:10) +
+  facet_grid(rows = vars(sample_size)) + 
+  theme(strip.text.y = element_text(angle = 0))
+
+p_elite_pcu_distr + 
+  labs(
+    title = expression(paste(
+      "Distributions of posterior classification uncertainty estimates by "
+      , n, " and "
+      , n[i]
+    ))
+    , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+    , color = "Chain"
+    , x = expression(paste("No. judgement aggregated per item, ", n[i]))
+    , y = expression(paste("Posterior classification uncertainty, ", SD(c[i])))
+    , caption = elite_plot_caption
+  )
+```
+
+A first view at the distributions ofUs for different values of $n$ and $n_i$ illustrates that our posterior classifications are comparatively uncertain if we aggregate only few judgments per item.
+As $n_i$ increases, however, the PCU of most items is reduced substantially, and in the extreme case of $n_i = 10$ is reduced to neglible levels in virtually all itmes.
+We can also see that increasing $n$ contributes only little to change this pattern.
+
+These results are summarized by the following figure that plots the change in mean PCU and the standard deviation inUs for different combinations of $n$ and $n_i$.
+  
+```{r plot PCU average}
+p_elite_pcu_avgs <- elite_pcu_sum %>% 
+  select(-lwr_pcu, -upr_pcu) %>% 
+  gather(stat, val, -sample_size, -n_i) %>% 
+  mutate(stat = case_when(
+    stat == "mean_pcu" ~ "Average posterior classification uncertainty"
+    , stat == "sd_pcu" ~ "Std. dev. in posterior classification uncertainty"
+    , TRUE ~ NA_character_
+  )) %>% 
+  ggplot(
+    aes(
+      x = n_i
+      , y = val
+      , color = factor(sample_size)
+      , group = sample_size
+      , alpha = .75
+    )
+  ) +
+    # scale_y_continuous(limits = c(0,.5)) +
+    scale_x_continuous(breaks = 3:10) +
+    geom_line() +
+    geom_point(size = 3.5, color = "white", alpha = 1) +
+    geom_point(size = 3, shape = 1) +
+    geom_point(size = 1) +
+    facet_grid(~stat) + 
+    guides(
+      alpha = FALSE,
+      colour = guide_legend(nrow = 1)
+    )
+  
+p_elite_pcu_avgs +  
+  labs(
+    title = "Change in posterior classification uncertainty"
+    , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+    , x = expression(paste("No. judgement aggregated per item, ", n[i]))
+    , y = NULL
+    , color = "Number of items:"
+    , caption = elite_plot_caption
+  )
+```
+
+While we see now more clearly that differences in $n$ make no significant difference, neither for changes in the mean PCU (left-hand panel) nor in the standard deviation of PCUs (right-hand panel), for all values of $n$ there occurs some reduction in mean PCU values as $n_i$ is increased.
+<!-- With regard to the viariability in PCU values, the right-hand panel illustrates the ceiling of PCU values for low values of $n_i$: -->
+Similarly, The standard deviation in PCUs is lower for higher values of $n_i$.
+Taken together, we thus see that both average PCU values and their variability decreases as $n_i$ is increased. 
+
+The above plot says little about the significance of the reductions in mean PCUs, however.
+Therefore, the below table reports the proportion of items whose PCU is *increased* if aggregating $n_i + l$ instead of $n_i$ judgments for $l \in (1, \ldots, 7)$ (displayed in columns 3--9).
+The proportion of items with positive PCU change from $n_i$ to $n_i + l$ can be interpreted as a significance test: if less than 5% of items see increase, we are 95% confident that the change in PCU induced by collecting and aggregating an additional $l$ judgments leads to an average decrease inUs.
+
+```{r tab significance PCU change, fig.height = 4, fig.width = 4}
+
+# elite_pcus %>% 
+#   group_by(sample_size, parameter) %>% 
+#   arrange(sample_size, parameter, n_i) %>% 
+#   mutate(diff_pcu = pcu - lag(pcu, order_by = n_i)) %>% 
+#   ggplot(aes(x = diff_pcu)) + 
+#     geom_vline(xintercept = 0) + 
+#     geom_density(color= NA, fill = "grey") +
+#     facet_grid(
+#       rows = vars(sample_size)
+#       , cols = vars(n_i)
+#       , switch = "y" 
+#     )
+#   
+# elite_pcus_delta1 <- elite_pcus %>% 
+#   group_by(sample_size, parameter) %>% 
+#   arrange(sample_size, parameter, n_i) %>% 
+#   mutate(
+#     diff_pcu = pcu - lag(pcu, n = 1, order_by = n_i)
+#     , flag = diff_pcu > 0
+#   )
+# 
+# ggplot(
+#   elite_pcus_delta1
+#   , aes(y = diff_pcu, x = n_i, group = n_i)
+# ) + 
+#   geom_violin(fill = "grey", color = NA, alpha = .75) +
+#   geom_hline(yintercept = 0, size = .5) +
+#   facet_grid(
+#     rows = vars(sample_size)
+#     # , cols = vars(n_i)
+#     , switch = "y" 
+#   ) +
+#   geom_text(
+#     data = elite_pcus_delta1 %>% 
+#       group_by(sample_size, n_i) %>% 
+#       summarise(
+#         top = mean(diff_pcu)+.25
+#         , prop_pos = mean(flag)
+#       )
+#     , mapping = aes(y = top, label = round(prop_pos, 3))
+#     , check_overlap = TRUE
+#     , size = 3
+#   )
+
+
+elite_pcu_deltas <- elite_pcus %>% 
+  group_by(sample_size, parameter) %>% 
+  arrange(sample_size, parameter, n_i) %>% 
+  nest(-sample_size, -parameter) %>% 
+  mutate(
+    lags = map(
+      data
+      , function(dat) {
+          imap_dfc(dat[-1], ~set_names(map(1:7, lead, x = .x), paste0(.y, '_lag', 1:7)))
+      }
+    )
+  ) %>% 
+  unnest() %>% 
+  arrange(sample_size, parameter, n_i) %>% 
+  gather(window_size, val, -sample_size, -parameter, -n_i, -pcu, na.rm = TRUE) %>% 
+  mutate(window_size = as.integer(gsub("\\D", "", window_size))) %>%
+  arrange(sample_size, parameter, n_i, window_size)
+
+# 
+# integer_scale <- function(x) unique(floor(pretty(seq(0, (max(x) + 1) * 1.1))))
+# 
+# elite_pcu_deltas %>% 
+#   mutate(
+#     diff_pcu = val - pcu
+#     , diff_is_pos = diff_pcu > 0
+#   ) %>% 
+#   group_by(sample_size, n_i, window_size) %>% 
+#   summarise(prop_pos = mean(diff_is_pos)) %>% 
+#   ggplot(aes(y = prop_pos, x = window_size, group = n_i, color = factor(n_i))) +
+#     geom_hline(yintercept = .1, color = "darkgrey") +
+#     # geom_rect(
+#     #   aes(
+#     #     xmin = 1, xmax = 7
+#     #     , ymax = .05, ymin = -Inf
+#     #   )
+#     #   , color = NA
+#     #   , fill = "grey"
+#     #   , alpha = .66
+#     # ) +
+#     scale_y_continuous(limits = c(0,.4)) + 
+#     geom_line() + 
+#     facet_grid(
+#       rows = vars(sample_size)
+#       # , cols = vars(n_i)
+#       , switch = "y"
+#       , scale = "free"
+#     ) + 
+#     scale_x_continuous(
+#       breaks = integer_scale
+#       , minor = integer_scale
+#     )
+#   
+elite_pcu_deltas_sum <- elite_pcu_deltas%>% 
+  mutate(
+    diff_pcu = val - pcu
+    , diff_is_pos = diff_pcu > 0
+  ) %>% 
+  group_by(sample_size, n_i, window_size) %>% 
+  summarise(prop_pos = mean(diff_is_pos)) 
+
+
+elite_pcu_deltas_sum %>% 
+  mutate(
+    prop_pos = round(prop_pos, 3)
+    , prop_pos = case_when(
+      prop_pos <= .001 ~ paste0(prop_pos, "$^{***}$")
+      , prop_pos <= .01 ~ paste0(prop_pos, "$^{**}$")
+      , prop_pos <= .05 ~ paste0(prop_pos, "$^*$")
+      , prop_pos <= .1 ~ paste0(prop_pos, "$^+$")
+      , TRUE ~ as.character(prop_pos)
+    )
+  ) %>% 
+  spread(window_size, prop_pos) %>% 
+  mutate_at(3:9, function(x) ifelse(is.na(x), "", x)) %>% 
+  knitr::kable(
+    caption = "Proportion of items with positive change in posteriro classification uncertainty"
+    , col.names = c("$n$", "$n_i$", 1:7)
+    , digits = 3
+    , na = ""
+  )
+
+```
+
+So, for instance, for $n = 200$, if we aggregate four instead of three judgments per items, this leads to a decrease in PCU in only about `r (1-elite_pcu_deltas_sum[1,4])*100`% of cases.
+We are `r (1-elite_pcu_deltas_sum[4,4])*100`% (`r (1-elite_pcu_deltas_sum[5,4])*100`%) certain, however, that collecting seven (eight) judgments instead of three judgmentes per item results in an average decrease in item-levelU, which meets the 5% confidence level criterion. 
+In order to recude average PCU levels, it thus seems advisable in most cases to collect multiple judgments per item (i.e., increase $n_i$) rather than judgments for new items (i.e., increase $n$).
+
+Another point underlining the added value of collecting multiple judgments per item while holding $n$ constant is illustrated by the following figure that separates items with positive average PCU change aggregated over all possible judgment increases from $n_i$ to $n_i +1$ for $n_i \in \{3, \ldots, 9\}$ from all other items.
+These items are important as average PCU increase characterizes items that the models tend to classify erroneously with high levels of posterior certainty when  aggregating only few judgments per item and whose classification becomes on average less certain if we add judgments.
+
+```{r}
+
+post_cs_sd_dpn <- elite_pcus %>% 
+  group_by(sample_size, parameter) %>% 
+  summarise(avg_delta_is_neg = mean(pcu - lag(pcu, order_by = n_i), na.rm = TRUE) <= 0)
+
+p_elite_pcu_change_props <- elite_pcus %>% 
+  left_join(post_cs_sd_dpn) %>% 
+  ggplot(
+    aes(
+      x = pcu
+      , y =  stat(count)
+      , fill = factor(avg_delta_is_neg)
+    )
+  ) + 
+  geom_density(
+    position = "fill"
+    , color = NA, alpha = 0.66
+  ) +
+  scale_fill_manual(
+    labels = c("> 0", "≤ 0")
+    , values = RColorBrewer::brewer.pal(3,name = "Set2")[2:1]
+  ) + 
+  facet_grid(
+    cols = vars(n_i)
+    , rows = vars(sample_size)
+    , scales = "free"
+    , switch = "y"
+  ) + 
+  theme(
+    strip.text.y = element_text(angle = 180)
+    , legend.position = "bottom"
+  )
+
+
+p_elite_pcu_change_props + 
+  labs(
+    title = "Relative proportion of items with an average increase in posterior classification uncertainty (PCU)"
+    # , subtitle = "Differences between items with an average increase in posterior classification uncertainty vs. others"
+    , x = expression(paste("Posterior classification uncertainty, ", SD(c[i])))
+    , y = NULL
+    , fill = "Average change in posterior classification uncertainty:"
+    , caption = "
+Items grouped by whether or not the change in posterior classification uncertainty when increasing the number
+of judgments aggregated per item (top panels) in integer steps is on average positive."
+  ) 
+```
+
+We see indeed that if we collect only few judgments per item (i.e., low values fo $n_i$), items that are characterized by large PCU when aggregating many judgments per item are <!-- for most combinations of $n$ and the lower values of $n_i$--> rather proportionally distributed across the entireU-value range.
+Thus, when collecting only few judgments per item, we are not able to separate items with an average increase in PCU as $n_i$ is increased from other, apprently less problematic items.
+Indeed, such separation is usually only possible for values of $n_i > 5$ (significantly, the size of $n$ makes no apparent difference in this regard).
+
+Especially worrying is that the uncertainty about posterior classification of some of the items that the model classifies quiet confidently based on relatively few judgments per items increases as we collect more judgments for these items:
+Indeed, for these items we observe a radical increase in PCU as $n_i$ is increased.
+If we wouldn't have collected more judgments for these items, we would be lead to err in believing that we know their true classes quiet confidently.
+  
+Note, however, that the absolute proportion of these items is rather small overall, as the following figure documents.
+```{r plot prop pos PCU change, fig.align = 'center', fig.height = 3, fig.width = 6}
+post_cs_sd_dpn %>% 
+  group_by(sample_size, avg_delta_is_neg) %>% 
+  summarise(Proportion = n()/unique(sample_size)) %>% 
+  ggplot(aes(y = Proportion, x = rev(sample_size), fill = avg_delta_is_neg)) +
+  geom_bar(
+    stat="identity"
+    , alpha = .66
+  ) +
+  scale_fill_manual(
+    labels = c("> 0", "≤ 0")
+    , values = RColorBrewer::brewer.pal(3,name = "Set2")[2:1]
+  ) +
+  scale_x_continuous(
+    breaks = seq(200,500,50)
+    , labels = rev(seq(200,500,50))
+  ) +
+  coord_flip() +
+  theme(legend.position = "bottom") +
+  labs(
+    title = "Absolute proportion of items with an average increase in posterior classification uncertainty (PCU)"
+    , x = expression(paste("No. items, ", n))
+    , fill = "Average change in posterior classification uncertainty:"
+  )
+
+```
+
+Indeed, this is good news: increasing $n_i$ leads to average reduction in PCU for the vast majority of items apparently rather independently from the size of $n$.
+
+#### Posterior classification performance
+
+Given that wew have simulated items and thus know their 'true' values, we can also assess model performance by computing and comparing conventional classification performance metrics.
+Specfically, in order to assess models' classification performance,
+I have first obtained items' true classes from the simulated codings dataset.
+Next, I have compared model-based classifications for each value of $n$, $n[i]$, each chain, and each iteration to true classes.
+Using this data, I have then computed statistics (mean, std. dev., and 5% and 95% percentiles) of performance measures across chains and iterations for each combination of $n$ and $n_i$.
+The following figure visualizes these statistics for different classification performance metrics.
+(Note the scaling of the x-axis, 90% of values are in the [.7,1] range.)
+
+```{r compute class performance}
+elite_postclass_quality <- sim_fitted$elite$fitted[[7]][[8]]$data %>% 
+  select(item, true_class) %>% 
+  unique() %>% 
+  mutate(parameter = sprintf("c[%s]", item)) %>% 
+  right_join(elite_cs) %>% 
+  group_by(sample_size, n_i, chain, iter) %>% 
+  summarise(
+    n_judgments = n_distinct(item)
+    , Accuracy = sum(est == true_class)/n_distinct(item)
+    , tp = sum(est == 1 & true_class == 1)
+    , fn = sum(est == 0 & true_class == 1)
+    , fp = sum(est == 1 & true_class == 0)
+    , tn = sum(est == 0 & true_class == 0)
+    , TPR = tp / (tp + fn)
+    , TNR = tn / (tn + fp) 
+    , FPR = fp / (tn + fp) 
+    , FNR = fn / (tp + fn)
+    , Precision = tp / (tp + fp) 
+    , Recall = TPR
+    , `F1-score` = 2*((Precision*Recall)/(Precision + Recall))
+  ) %>% 
+  ungroup()
+
+get_q05 <- function(x, na.rm) quantile(x, .05, na.rm = na.rm)
+get_q95 <- function(x, na.rm) quantile(x, .95, na.rm = na.rm)
+
+elite_postclass_quality_sum <- elite_postclass_quality %>% 
+  group_by(sample_size, n_i) %>% 
+  summarise_at(
+    vars(Accuracy, ends_with("R", ignore.case = FALSE), Precision, Recall, `F1-score`)
+    , funs(mean, sd, q05 = get_q05, q95 = get_q95, .args = list(na.rm = TRUE))
+  )  %>% 
+  gather(metric, value, -sample_size, -n_i) %>% 
+  separate(metric, c("metric", "statistic"), sep = "_") %>% 
+  spread(statistic, value)
+```
+
+```{r plot class performance}
+
+these_metrics <- c(
+  "Accuracy"
+  , "TNR"
+  # , "TPR"
+  , "Precision"
+  , "Recall"
+  , "F1-score"
+)
+
+p_elite_postclass_quality_sum <- elite_postclass_quality_sum %>% 
+  filter(metric %in% these_metrics) %>% 
+  ggplot() +
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(metric)
+    , scales = "free_x"
+    , switch = "y"
+  ) +
+  geom_point(aes(x = n_i, y = mean), size = .5) +
+  geom_linerange(aes(x = n_i, ymin = q05, ymax = q95), size = .2) +
+  scale_x_continuous(breaks = 3:10, minor_breaks = NULL, limits = c(2.7, 10.3)) + 
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_postclass_quality_sum +
+  labs(
+    title = expression(paste(
+      "Mean and 90%-CIs of performance metrics by "
+      , n, " and "
+      , n[i]
+    ))
+    , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+    , y = NULL
+    , x = expression(n[i])
+    , caption = elite_plot_caption
+  )
+```
+
+- *Accuracy*, defined as the proportion of correctly classified items, increases (weakly) as $n_i$ is increased.
+There exist no substantial accuracy differentials across values of $n$, however. (Only 90%-CIs get tighter as $n$ is increased, which is due to higher precision resulting from computing accuracy from a increasingly larger samples.)
+- *Recall* (also: true-positive rate, TPR), defined as the number of true-positive classifications over the sum of true-positive and false-negative classifications (i.e., over the number of all positive items), exhibits much more variability across values of $n_i$.
+- Similarly, *precision*, defined as the number of true-positive classifications over the sum of all positive classification (incl. false-positives), is relatively low for low $n_i$, but increases quiet rapidly as $n_i$ is increased. The CIs for precision estimates are comparatively wide, however.
+- In contrast, *TNR*, the true-negative rate defined as the number of true-negative classifications over the number of all negative items, is very high already for low values of $n_i$, and thus we observe no substantial improvements in the negative detection rates of models as the number of judgments aggregated per item is increased. This is due to the fact that with a low positice instance prevalence, our simulated coders judge in expectation true negative items about four to five times more than positive instance. There is thus more data and hence higher precision in negative detection.
+- Finally, the *F1-score* that combines recall and precision into one metric[^f1] increases significantly as $n_i$ is increased. This is because in the denominator low Precision depresses the F1-score.
+
+The next table reports significance levels of positive F1-score change as $n_i$ is increased by $l$ (columns 3--9).
+It reports the proportion of iterations across chains for which an increase from $n_i$ to $n_i+l$ judgments per item induces a decrease in the F1-score.
+Agian, this can be used as a significance test.
+The logic is simple: as we want to see F1-score increases as $l$ is increased, the smaller the proportion with a F1-score reduction, the better.
+
+[^f1]: The formula is $\text{F1-score} = 2\times\frac{\text{Precision}\times \text{Recall}}{\text{Precision} + \text{Recall}}$
+
+
+```{r tab f1score change significances}
+elite_postclass_f1_deltas <-  elite_postclass_quality %>% 
+  select(sample_size, n_i, chain, iter, f1 = `F1-score`) %>% 
+  group_by(sample_size, chain, iter) %>% 
+  arrange(sample_size, chain, iter, n_i) %>% 
+  nest(-sample_size, -chain, -iter) %>% 
+  mutate(
+    lags = map(
+      data
+      , function(dat) {
+          imap_dfc(dat[-1], ~set_names(map(1:7, lead, x = .x), paste0(.y, '_lag', 1:7)))
+      }
+    )
+  ) %>% 
+  unnest() %>% 
+  arrange(sample_size, chain, iter, n_i) %>% 
+  gather(window_size, val, -sample_size, -chain, -iter, -n_i, -f1, na.rm = TRUE) %>% 
+  mutate(window_size = as.integer(gsub(".+_lag(\\d)", "\\1", window_size))) %>%
+  arrange(sample_size, chain, iter, n_i, window_size)
+
+elite_postclass_f1_deltas_sum <- elite_postclass_f1_deltas %>% 
+  mutate(
+    # difference between higher and  reference n_i-values
+    diff = val - f1
+    # is higher-n_i value lower than reference n_i-value?
+    , diff_is_neg = diff < 0
+  ) %>% 
+  group_by(sample_size, n_i, window_size) %>% 
+  # compute proportion of iterations across chains with F1-score reduction (the smaller, the better)
+  summarise(prop_neg = mean(diff_is_neg)) 
+
+elite_postclass_f1_deltas_sum %>% 
+  mutate(
+    prop_neg = round(prop_neg, 3)
+    , prop_neg = case_when(
+      # logic of sign. test: the fewer the prop. of iterations across chains with a F1-score reduction, the better
+      prop_neg <= .001 ~ paste0(prop_neg, "$^{***}$")
+      , prop_neg <= .01 ~ paste0(prop_neg, "$^{**}$")
+      , prop_neg <= .05 ~ paste0(prop_neg, "$^*$")
+      , prop_neg <= .1 ~ paste0(prop_neg, "$^+$")
+      , TRUE ~ as.character(prop_neg)
+    )
+  ) %>% 
+  spread(window_size, prop_neg) %>% 
+  mutate_at(3:9, function(x) ifelse(is.na(x), "", x)) %>% 
+  knitr::kable(
+    caption = "Proportion of iterations with negative change in F1-score"
+    , col.names = c("$n$", "$n_i$", 1:7)
+    , digits = 3
+    , na = ""
+  )
+```
+
+We see that while it is not possible to assert significant F1-score imrpovments for higher-values of $n_i$ in models fitted to small-$n$ subsets (due to smaller sample sizes and hence less power), we have reason to be confident that increasing the number of judgments if we have collect only few thus far would lead to improvments in the models classification performance.
+
+
+Another approach to visualizing posterior classification performance follows @carpenter_multilevel_2008 and plots the (absolute) residual classification error for items differentiating between true-positive and true-negative items:
+
+```{r, plot abs residuals by class}
+elite_post_classes <- elite_cs %>% 
+  group_by(sample_size, n_i, parameter) %>% 
+  summarise(post_class = mean(est))
+
+elite_classes <- sim_fitted$elite$fitted[[7]][[8]]$data %>% 
+  select(item, true_class) %>% 
+  unique() %>% 
+  mutate(parameter = sprintf("c[%s]", item)) %>% 
+  right_join(elite_post_classes)
+
+
+p_elite_residuals_by_class <- elite_classes %>% 
+  mutate(
+    rce = case_when(
+      true_class == 0 ~ post_class
+      , true_class == 1 ~ (1-post_class)
+      , TRUE ~ NA_real_
+    )
+  ) %>% 
+  ggplot(aes(x = rce, fill = as.factor(true_class), group = true_class)) +
+    geom_vline(
+      aes(xintercept = .5)
+      , linetype = "dashed"
+      , color = "darkgrey"
+      , size = .5
+    ) + 
+    geom_histogram(
+      aes(y = stat(width*density))
+      , position="identity"
+      , bins = 25
+      # , alpha = .66
+      , alpha = .5
+    ) +
+    scale_y_continuous(
+      labels = scales::percent_format()
+      # trans = scales::trans_new(
+      #   name = "log2+1"
+      #   , transform = function(x) {log2(x+1)}
+      #   , inverse = function(x) {(2**x)-1}
+      #   , domain = c(0, Inf)
+      # )
+      # , breaks = seq(0,200,25)
+    ) +
+    scale_x_continuous(breaks = seq(0,1,.25)) +
+    scale_fill_manual(values = RColorBrewer::brewer.pal(3,name = "Set2")[2:1]) +
+    facet_grid(
+      # sample_size~n_i+true_class
+      rows = vars(sample_size)
+      , cols = vars(n_i)
+      , scale = "free_y"
+      , switch = "y"
+    )
+
+
+p_elite_residuals_by_class + 
+    labs(
+      title = "Histograms of magnitude of residual errors in posterior classifcations by class."
+      , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+      , x = "Absolute residual classification error (|true class - mean posterior estimate|)"
+      , y = NULL
+      , fill = "True class:"
+      , caption = "Grey vertical line cutting the x-axis at .5 indicates classification threshold: items with absoult residual error > .5 are misclassified."  #elite_plot_caption
+    )
+```
+
+Again we can generally see that posterior mean estimates perform comparatively poorly in correctly classifying true positives.
+While most true-negative items have low absoulte residual classification error (ARCE) and are hence correctly classified (correct classification for ARCE <= .5), true-positive items are sometimes misclassified, especially for low values of $n_i$ (some true-positive items have ARCE > .5).
+This reflect the generally high levels of true-negative detection ability of models accross values of $n$ and $n_i$, in contrast to the compartively low true-positive detection ability (recall).
+Yet, though misclassification occurs more often for true-positive items, the confidence in these items' classifications is limited (most ACREs are close tot the classficiation threshold of .5). 
+<!-- Particularly worth stressing is that for low values of $n_i$, many true-positives are quiet confidently misclassified (ARCE approaching 1). -->
+What is more, this proportion is reduced as $n_i$ is increased, as most absolute residual values approach zero or at least get lower than .5.
+
+Because, the above plot reports proportions across the ACRE-value range that were computed within item classes (for each $n$--$n_i$ combination), the total proprotions are eclipsed. 
+Indeed, as true items make up only between `r range(elite_sim_codings$prop_true)*100`% of all items in the respective subsets, the amount of misclassification resulting from poor true-positive detection rates is actually not too grave as the following plot shows more accurately.
+(Note that the x-axis of this plot depict the real-valued residual classification error, not absolute values).
+```{r plot residuals}
+p_elite_residuals <- elite_classes %>% 
+  mutate(rce = true_class - post_class) %>% 
+  ggplot(aes(x = rce)) + 
+    geom_vline(
+      xintercept = c(-.5,.5)
+      , linetype = "dashed"
+      , color = "darkgrey"
+      , size = .5
+    ) + 
+    geom_histogram(
+      aes(y = stat(width*density))
+      , position="identity"
+      , alpha = .66
+    ) +
+    scale_y_continuous(
+      labels = scales::percent_format()
+    ) +
+    scale_x_continuous(breaks = seq(-1,1,.5)) +
+    facet_grid(
+      rows = vars(sample_size)
+      , cols = vars(n_i)
+      , scale = "free_y"
+      , switch = "y"
+    )
+
+p_elite_residuals + 
+  labs(
+      title = "Histograms of residual errors in posterior classifcations"
+      , subtitle = "Results obtained by fitting BBA model to simulated anti-elitism codings"
+      , x = "Residual classification error (true class - mean posterior estimate)"
+      , y = NULL
+      # , caption = elite_plot_caption
+      , caption = "Grey vertical line cutting the x-axis at -.5 and .5, respectively, indicate classification thresholds: items with residual error < -.5 and > .5 are misclassified."  #elite_plot_caption
+    )
+```
+
+In these figures, negative residuals measure how much the mean posterior class estimate (across chains an iterations) of a model deviates from the true value of 1 (0). 
+That is, residuals in model-based classification of true-positive itmes are negative in $[-1,0)$, whereas residuals in resulting from model-based classification of true-negative itmes are always positive in $(0,1]$.
+Actual misclassification of true-positives (true-negatives) occurs only if the residual is smaller (greater) than -.5 (.5)---hence the two vertical dashed lines at -.5 and .5.
+Indeed, because for each true-positive item there are about 9 true-negatives, misclassification of true-negative items occurs more often in absolute terms, whereas in relative terms models' true-negative detection abilities (TNR) tends to be better than their true-positive detection ability (Recall).
+
+#### Comparison to majority-voting based classifications
+
+```{r tab disagreement}
+elite_voted <- map_df(sim_fitted$elite$fitted, function(g) {
+  map_df(g, function(l) {
+    l$data %>% 
+      group_by(item, sample_size, n_i) %>% 
+      summarise(
+        n_pos = sum(judgment)
+        , n_neg = sum(!judgment)
+        , tie_breaker = rbernoulli(1) 
+        , voted = case_when(
+          n_pos > n_neg ~ 1L
+          , n_pos < n_neg ~ 0L
+          , TRUE ~ as.integer(tie_breaker)
+        )
+        , true_class = unique(true_class)
+      ) 
+  })
+})
+
+elite_post_class <- elite_cs %>% 
+  group_by(parameter, sample_size, n_i) %>% 
+  summarise(
+    n_pos = sum(est)
+    , n_neg = sum(!est)
+    , tie_breaker = rbernoulli(1) 
+    , post_class = case_when(
+      n_pos > n_neg ~ 1L
+      , n_pos < n_neg ~ 0L
+      , TRUE ~ as.integer(tie_breaker)
+    )
+  ) %>% 
+  mutate(item = as.integer(sub(".*\\[(\\d+)\\]$", "\\1", parameter)))
+
+elite_class_agreement <- elite_voted %>% 
+  left_join(elite_post_class, by = c("item", "sample_size", "n_i")) %>% 
+  select(sample_size, n_i, item, voted, post_class, true_class) %>% 
+  mutate(agree = if_else(voted == post_class, "yes", "no")) %>% 
+  group_by(sample_size, n_i, agree) %>% 
+  summarise(n = n(), prop = n()/unique(sample_size)) %>% 
+  filter(agree == "no") %>% 
+  mutate(
+    prop = prop %>% 
+      replace_na(0) %>% 
+      `*`(100) %>% 
+      round(2)
+    , temp = sprintf("%s (%s%s)", n, prop, "%")
+    , temp = sub("^(\\d )", " \\1", temp)
+  ) %>% 
+  select(-agree, -n, -prop) %>% 
+  spread(n_i, temp) %>% 
+  mutate_at(2:9, funs(replace_na), " 0 (0%)")
+  
+elite_class_agreement %>% 
+  knitr::kable(
+    caption = "Disagreements between model-based classifications and majority voting"
+    , col.names = c("$n$", 3:10)
+  )
+```
+
+Indeed, disagreements occur not too frequently.
+Alternatively, we can assess agreement by computing correlations between majority voting and model-based classifications:
+
+```{r tab class corr}
+elite_class_corr <- elite_voted %>% 
+  left_join(elite_post_class, by = c("item", "sample_size", "n_i")) %>% 
+  group_by(sample_size, n_i) %>% 
+  summarise(class_corr = cor(voted, post_class))
+
+elite_class_corr %>% 
+  spread(n_i, class_corr) %>% 
+  knitr::kable(
+    caption = "Correlation between model-based classifications and majority voting"
+    , col.names = c("$n$", 3:10)
+    , digits = 3
+  )
+```
+
+```{r }
+elite_voted %>% 
+  filter(sample_size == 200, n_i == 9) %>% 
+  group_by(sample_size, n_i) %>% 
+  summarise(
+    n_judgments = n_distinct(item)
+    , Accuracy = sum(voted == true_class)/n_distinct(item)
+    , tp = sum(voted == 1 & true_class == 1)
+    , fn = sum(voted == 0 & true_class == 1)
+    , fp = sum(voted == 1 & true_class == 0)
+    , tn = sum(voted == 0 & true_class == 0)
+    , TPR = tp / (tp + fn)
+    , TNR = tn / (tn + fp) 
+    , FPR = fp / (tn + fp) 
+    , FNR = fn / (tp + fn)
+    , Precision = tp / (tp + fp) 
+    , Recall = TPR
+    , `F1-score` = 2*((Precision*Recall)/(Precision + Recall))
+  ) %>% 
+  ungroup()
+  
+```
+
+```{r plot vote performance}
+elite_voted_quality <- elite_voted %>% 
+  group_by(sample_size, n_i) %>% 
+  summarise(
+    n_judgments = n_distinct(item)
+    , Accuracy = sum(voted == true_class)/n_distinct(item)
+    , tp = sum(voted == 1 & true_class == 1)
+    , fn = sum(voted == 0 & true_class == 1)
+    , fp = sum(voted == 1 & true_class == 0)
+    , tn = sum(voted == 0 & true_class == 0)
+    , TPR = tp / (tp + fn)
+    , TNR = tn / (tn + fp) 
+    , FPR = fp / (tn + fp) 
+    , FNR = fn / (tp + fn)
+    , Precision = tp / (tp + fp) 
+    , Recall = TPR
+    , `F1-score` = 2*((Precision*Recall)/(Precision + Recall))
+  ) %>% 
+  ungroup() %>% 
+  gather(metric, value, -sample_size, -n_i)
+
+p_elite_voted_quality <- elite_voted_quality %>% 
+  filter(metric %in% these_metrics) %>% 
+  ggplot() +
+  facet_grid(
+    rows = vars(sample_size)
+    , cols = vars(metric)
+    , scales = "free_x"
+    # cols = vars(sample_size)
+    # , rows = vars(metric)
+    # , scales = "free_y"
+    , switch = "y"
+  ) +
+  geom_point(aes(x = n_i, y = value), size = .5) +
+  scale_x_continuous(breaks = 3:10, minor_breaks = NULL, limits = c(2.7, 10.3)) +
+  theme(strip.text.y = element_text(angle = 180))
+
+p_elite_voted_quality +
+  labs(
+    title = expression(paste(
+      "Mean performance metrics by "
+      , n, " and "
+      , n[i]
+    ))
+    , subtitle = "Results obtained by inducing majority winner (w/ random tie-breaking) in simulated anti-elitism codings"
+    , y = NULL
+    , x = expression(n[i])
+    , caption = elite_plot_caption
+  )
+
+```
+
+A stiking result of ther classification performances of majorty voting is that we get no false-positives.
+Hence, both the Precision and TNR for all models are perfect (false-positives factor in the denominator of both metrics).
+And what is more, because of the strong class imbalance, the accuracies are also very close to perfect.
+Indeed the F1-score is a much more informative metric in presence of such intense class imbalance.
+
+Given that we obtain posterior classifications for each iteration and each chain of each model, we can also compute how confident we can be that the model and majority voting induce different classification performances.
+These differences are illustrated for F1-scores in the following plot.
+To obtain 90% confidence bounds, the majority-voting based F1-score point estimates have been substracted from scores induced by model-based classifications of each iteration. This yielded 3000 differences that were then aggregated into means and 90%-CIs.
+
+```{r plot f1 differences}
+
+elite_f1_compared <- elite_postclass_quality %>% 
+  rename(value = "F1-score") %>% 
+  select(sample_size, n_i, chain, iter, value) %>% 
+  left_join(
+    elite_voted_quality %>% 
+      filter(metric == "F1-score") %>% 
+      select(-metric)
+    , by = c("sample_size", "n_i")
+    , suffix = c("_model", "_voted")
+  ) %>% 
+  # pos diff indicates model better, neg indicates vote better
+  mutate(diff = value_model - value_voted)
+
+p_elite_f1_compared <- elite_f1_compared %>% 
+  group_by(sample_size, n_i) %>% 
+  summarise(
+    mean_diff = mean(diff)
+    , q05 = quantile(diff, .05)  
+    , q95 = quantile(diff, .95)  
+  ) %>% 
+  ggplot(aes(y = mean_diff, ymin = q05, ymax = q95, x = n_i)) +
+    geom_point() + 
+    geom_linerange(size = .5) + 
+    geom_hline(yintercept = 0, color = "red", size = .25) + 
+    scale_x_continuous(breaks = 3:10, minor_breaks = 3:10) + 
+    facet_grid(
+      rows = vars(sample_size)
+      , switch = "y"
+    )
+
+p_elite_f1_compared + 
+  labs(
+    title = "Mean differences and 90%-CIs between F1-scores induced by majority voting and model-based classification"
+    , subtitle = "Positive (negative) differences suggest superiority of model (majority voting)"
+    , y = NULL
+    , x = expression(n[i])
+    , caption = elite_plot_caption
+  )
+```
+
+This shows that while majority voting outperforms model-based classifications in terms of F1-scores for all values of $n$ (though not significantly for all values), we see that for higher $n_i$ the model tends to perform (significantly) better.
+Specifically, for $n_i > 6$ (differences for $n_i = 6$ may be induced by random tiebreaking in majority voting), we are 95% certain for all values of $n$ that the model-based classification yield higher F1-scores than does majority voting.
+Note that the choice of comparing the F1-scores of model and majority voting induced comparisons was theoretically informed.
+In presence of such strong class imbalance, the accuracy is not a good performance criterion.
+By taking both precision and recall into account, we can achieve high F1-scores only if our aggregation method performs also reasonable well in correctly classifying true-positive items---a job the BBA model is doing better than the majority vote for $n_i > 6$ in the simulated data.
+
+
+## References

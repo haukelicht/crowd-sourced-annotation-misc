@@ -1,0 +1,106 @@
+# JAGS code from Section 2 a) in Benoit et al. (2015) "Crowd-sourced coding of political texts"
+# (obtained from https://static.cambridge.org/resource/id/urn:cambridge.org:id:binary:20161006202028440-0213:S0003055416000058:S0003055416000058sup001.pdf)
+
+# define model
+# Note: names of title-case variables (e.g., CoderID) correspond to variable names in the dataset used to fit the model 
+model {
+
+    # Indexing: 
+    #   - j indicates sentences (i.e., instances of text/coding units)
+    #   - d indicates the dimensions: economic domain (1), social domain (2), economic position (3), social position (4)
+    #   - i indicates individual 'readers' (i.e., coders)
+    # Parameters:
+    #   - theta_jd is a latent sentence-level attribute (difficulty parameter) of sentence j on dimension d
+    #   - psi_id is coder i's (sentence invariant) bias on dimension d 
+    #       - bias towards classifying a sentence 
+    #           - as instance of the economic domain rather than to none if d = 1,
+    #           - as instance of the social domain rather than to none if d = 2, and
+    #           - rather right than left if d in {3, 4}
+    #   - chi_id is coder i's (sentence invariant) sensitivity (i.e., relative responsiveness) to changes in sentence attribute theta_jd of sentence j on dimension d
+
+    # for each coding q in 1, ..., n
+    for (q in 1:Ncodings){
+    
+        # Define latent response mu_ij,d for code/scale in econ/social
+        # Note: first Eq. on p. 282 in orig. Article
+        mucode[q,1] <- (theta[SentenceID[q],1,1] + psi[CoderID[q],1,1])*chi[CoderID[q],1,1];
+        mucode[q,2] <- (theta[SentenceID[q],2,1] + psi[CoderID[q],2,1])*chi[CoderID[q],2,1];
+        muscale[q,1] <- (theta[SentenceID[q],1,2] + psi[CoderID[q],1,2])*chi[CoderID[q],1,2];
+        muscale[q,2] <- (theta[SentenceID[q],2,2] + psi[CoderID[q],2,2])*chi[CoderID[q],2,2];
+
+        # Translate latent responses into 11 category probabilities (up to normalization)
+        # Note: categories correspond to final nodes in Figure 1 in orig. Article (cf. second set of Eqs. on pp. 282f)
+        # probability of sentence being assigned neither to economic nor to social domain  
+        mu[q,1] <- 1;
+        # probabilities of sentence being classified values on economic scale
+        mu[q,2] <- exp(mucode[q,1])*(ilogit(-1*cut[2] - muscale[q,1]));
+        mu[q,3] <- exp(mucode[q,1])*(ilogit(-1*cut[1] - muscale[q,1])-ilogit(-1*cut[2] - muscale[q,1]));
+        mu[q,4] <- exp(mucode[q,1])*(ilogit(1*cut[1] - muscale[q,1])-ilogit(-1*cut[1] - muscale[q,1]));
+        mu[q,5] <- exp(mucode[q,1])*(ilogit(1*cut[2] - muscale[q,1])-ilogit(1*cut[1] - muscale[q,1]));
+        mu[q,6] <- exp(mucode[q,1])*(1-ilogit(1*cut[2] - muscale[q,1]));
+        # probabilities of sentence being classified values on social scale
+        mu[q,7] <- exp(mucode[q,2])*(ilogit(-1*cut[2] - muscale[q,2]));
+        mu[q,8] <- exp(mucode[q,2])*(ilogit(-1*cut[1] - muscale[q,2])-ilogit(-1*cut[2] - muscale[q,2]));
+        mu[q,9] <- exp(mucode[q,2])*(ilogit(1*cut[1] - muscale[q,2])-ilogit(-1*cut[1] - muscale[q,2]));
+        mu[q,10] <- exp(mucode[q,2])*(ilogit(1*cut[2] - muscale[q,2])-ilogit(1*cut[1] - muscale[q,2]));
+        mu[q,11] <- exp(mucode[q,2])*(1-ilogit(1*cut[2] - muscale[q,2]));
+        
+        # 11 category multinomial
+        Y[q] ~ dcat(mu[q,1:11]);
+    }
+
+    # Specify uniform priors for ordinal thresholds (assumes left-right symmetry)
+    cut[1] ~ dunif(0,5); # draw from uniform distribution bound at [0, 5]
+    cut[2] ~ dunif(cut[1],10); # draw from uniform distribution bound at [cut_1, 10]
+
+    # Priors for coder bias parameters
+    # Note: indexing is coder ID, code vs. scale, and social vs. right
+    for (i in 1:Ncoders) {
+        psi[i,1,1] ~ dnorm(0,taupsi[1,1]);
+        psi[i,2,1] ~ dnorm(0,taupsi[2,1]);
+        psi[i,1,2] ~ dnorm(0,taupsi[1,2]);
+        psi[i,2,2] ~ dnorm(0,taupsi[2,2]);
+    }
+
+    # Priors for coder sensitivity parameters
+    for (i in 1:Ncoders) {
+        chi[i,1,1] ~ dnorm(0,1)T(0,);
+        chi[i,2,1] ~ dnorm(0,1)T(0,);
+        chi[i,1,2] ~ dnorm(0,1)T(0,);
+        chi[i,2,2] ~ dnorm(0,1)T(0,);
+    }
+
+    # Priors for sentence latent parameters
+    for (j in 1:Nsentences) {
+        theta[j,1,1] ~ dnorm(thetabar[ManifestoIDforSentence[j],1,1],tautheta[1,1]);
+        theta[j,2,1] ~ dnorm(thetabar[ManifestoIDforSentence[j],2,1],tautheta[2,1]);
+        theta[j,1,2] ~ dnorm(thetabar[ManifestoIDforSentence[j],1,2],tautheta[1,2]);
+        theta[j,2,2] ~ dnorm(thetabar[ManifestoIDforSentence[j],2,2],tautheta[2,2]);
+    }
+
+    # Priors for manifesto latent parameters
+    # Note: document-level latent attributes that factor into sentence-level latent attributes (cf. 2. Eq. on p. 283)
+    for (k in 1:Nmanifestos) {
+        thetabar[k,1,1] ~ dnorm(0,1);
+        thetabar[k,2,1] ~ dnorm(0,1);
+        thetabar[k,1,2] ~ dnorm(0,1);
+        thetabar[k,2,2] ~ dnorm(0,1);
+    }
+
+    # Variance parameters
+    # Note: dgamma(1,1) gives uniform distribution on [0, 1]
+    
+    # error terms that factor into coder-level biases (cf. 2. Eq. on p. 283) 
+    # Note: indexing is code vs. scale, and social vs. right
+    taupsi[1,1] ~ dgamma(1,1);
+    taupsi[2,1] ~ dgamma(1,1);
+    taupsi[1,2] ~ dgamma(1,1);
+    taupsi[2,2] ~ dgamma(1,1);
+    
+    # error terms sigma_d (in a 2x2 matrix) that factor into sentence-level latent attributes (cf. 2. Eq. on p. 283)
+    # Note: indexing is code vs. scale, and social vs. right
+    tautheta[1,1] ~ dgamma(1,1);
+    tautheta[2,1] ~ dgamma(1,1);
+    tautheta[1,2] ~ dgamma(1,1);
+    tautheta[2,2] ~ dgamma(1,1);
+}

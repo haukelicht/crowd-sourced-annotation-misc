@@ -1,0 +1,64 @@
+# --------------------------------------------------------------------------- #
+# ---- JAGS model of Carpenter's (2008) beta-binomial by annotator model ---- #
+# --------------------------------------------------------------------------- #
+#
+#  - N denotes the number of items/instances, indexed by i
+#  - M denotes the number of annotators, indexed by j
+# 
+# Comments:
+#  - Data input:
+#    - y a vector of annotator-generated judgments, so that y[i,j] \in \{0,1\} denotes annotator i's judgment of item j 
+# 
+#  - Parameters:
+#    - c[i] is item i's 'true' class \in \{0,1\}
+#    - pi is the 'true' prevalence of the positive class
+#    - theta0[j] is annotator j's true-negative classification rate \in [0,1]
+#    - theta1[j] is annotator j's true-positive classification rate \in [0,1]
+#  - Meta-parameter:
+#    - alpha0 determines the location of the prior density of coders' true-negative classification rates
+#    - beta0 determines the shape of the prior density of coders' true-negative classification rates
+#    - alpha1 determines the location of the prior density of coders' true-positive classification rates
+#    - beta1 determines the shape of the prior density of coders' true-positive classification rates
+#
+model{
+    # loop over items
+    for (i in 1:N){
+        c[i] ~ dbern(pi)
+    }
+
+    # loop over annotators:
+    # NOTE: for each annotator j, a specificity theta0[j] and a sensitivity 
+    #   theta1[j] are sampled from beta priors with parameters (alpha0, beta0) 
+    #   and (alpha1, beta1) respectively. 
+    #   The parameters are part of the model and thus themselves have priors (see below)
+    for (j in 1:M) {
+        theta0[j]~ dbeta(alpha0, beta0) T(0.0001,0.9999);
+        theta1[j]~ dbeta(alpha1, beta1) T(0.0001,0.9999);
+    }
+
+    # loop over judgments
+    for (j in 1:J) {
+        y[j,3] ~ dbern(c[y[j,1]]*theta1[y[j,2]]+(1-c[y[j,1]])*(1-theta0[y[j,2]]))
+    }
+
+    # flat prioir on 'true' prevalence
+    pi ~ dbeta(2, 8);
+    
+    
+    # For specifying priors, we reparameterize the beta distribution 
+    # in terms of mean alpha0/(alpha0+beta0) and scale alpha0+beta0
+    # We put a uniform prior on the mean and a uniform prior on the 
+    # inverse square scale 1/(alpha0+beta0)^2
+    # The uniform prior on the inverse square scale works out to a 
+    # Pareto prior on the scale alpha0+beta0
+
+    mean0 ~ dbeta(1,1) T(0.0001,0.9999);
+    scale0 ~ dpar(1.5,1);
+    alpha0 <- mean0*scale0;
+    beta0 <- scale0-alpha0;
+
+    mean1 ~ dbeta(1,1) T(0.0001,0.9999);
+    scale1 ~ dpar(1.5,1);
+    alpha1 <- mean1*scale1;
+    beta1 <- scale1-alpha1;
+}
